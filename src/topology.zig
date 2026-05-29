@@ -160,7 +160,6 @@ pub const SimState = struct {
 
     pub fn delete(self: *@This(), arena: Allocator, gpa: Allocator) void {
         self.users.deinit(arena);
-        arena.free(self.followers);
 
         for (self.timelines) |timeline| {
             timeline.deinit(gpa);
@@ -168,7 +167,7 @@ pub const SimState = struct {
         gpa.free(self.timelines);
 
         self.user_seen_post.deinit(arena);
-        self.user_interacted_post.deinit(arena);
+        self.user_interact_post.deinit(arena);
         self.posts.deinit(arena);
     }
 };

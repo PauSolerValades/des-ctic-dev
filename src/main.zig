@@ -96,10 +96,14 @@ pub fn main(init: std.process.Init) !void {
 
     const startTimeWireData = Io.Timestamp.now(init.io, .real);
 
-    // loads the users in memory
     // loads followers in memory
     const topology: Topology = try .create(arena, sampled_topology);
+    defer {
+        var vartop = topology;
+        vartop.delete(arena);
+    }
     var state: SimState = try .create(init.io, arena, gpa, rng, sampled_topology);
+    defer state.delete(arena, gpa);
 
     const elapsedTimeWireData = startTimeWireData.untilNow(init.io, .real);
 
@@ -186,8 +190,7 @@ pub fn main(init: std.process.Init) !void {
     const prop_writer = &prop_file_writer.interface;
 
     const startTime = Io.Timestamp.now(init.io, .real);
-
-    const results = try simulation_tmp(
+    const results = try simulation.simulate(
         gpa,
         arena,
         rng,
@@ -224,36 +227,6 @@ pub fn main(init: std.process.Init) !void {
     try bytesToJsonl(init.io, entities.TracePropagation, prop_bin, prop_jsonl);
 
     try stdout.flush();
-}
-
-// ─── simulation_tmp: compile-check stub for the new Graph + State split ─────
-fn simulation_tmp(
-    gpa: Allocator,
-    arena: Allocator,
-    rng: Random,
-    simconf: *const SimConfig,
-    topology: *const Topology,
-    state: *SimState,
-    action_trace: *Io.Writer,
-    session_trace: *Io.Writer,
-    create_trace: *Io.Writer,
-    propagate_trace: *Io.Writer,
-) !SimResults {
-    _ = gpa;
-    _ = arena;
-    _ = rng;
-    _ = simconf;
-    _ = action_trace;
-    _ = session_trace;
-    _ = create_trace;
-    _ = propagate_trace;
-
-    std.debug.print(
-        "simulation_tmp: Graph wired — {d} users, {d} edges, {d} timelines.\n",
-        .{ state.users.len, topology.csr.len, state.timelines.len },
-    );
-
-    @panic("simulation_tmp: stub — replace with real implementation");
 }
 
 /// this probably could be much more prettier if I passed the Io.Writer/Io.Reader by parameter, and I
