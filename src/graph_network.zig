@@ -4,6 +4,7 @@ const Allocator = std.mem.Allocator;
 const DynamicBitSet = std.DynamicBitSetUnmanaged;
 const MultiArrayList = std.MultiArrayList;
 const Random = std.Random;
+const Io = std.Io;
 
 const build = @import("build");
 
@@ -23,11 +24,11 @@ const Post = entities.Post;
 const Index = entities.Index;
 const Action = entities.Action;
 
-const TimelineHeap = DaryHeap(entities.TimelineEvent, 8, void, entities.compareTimelineEvent);
-
 const Precision = @import("config.zig").Precision;
 
 const BinaryGraph = @import("json_loading.zig").BinaryGraph;
+
+const TimelineHeap = ds.DaryHeap(TimelineEvent, 8, void, entities.compareTimelineEvent);
 
 fn fillPareto(io: std.Io, filename: []const u8, shape_buff: []f64, scale_buff: []f64) !void {
     var buf: [32 * 10000]u8 = undefined;

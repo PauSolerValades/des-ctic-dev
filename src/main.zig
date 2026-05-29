@@ -13,16 +13,25 @@ const structs = @import("config.zig");
 const simulation = @import("simulation.zig");
 
 const loader = @import("json_loading.zig");
-const gn = @import("graph_network.zig");
 const entities = @import("entities.zig");
+
+const topo = @import("topology.zig");
 
 const Distribution = structs.Distribution;
 const SimConfig = structs.SimConfig;
 const SimResults = structs.SimResults;
 
+const Topology = topo.Topology;
+const SimState = topo.SimState;
+
 const User = simulation.User;
 const Post = simulation.Post;
 const TimelineEvent = simulation.TimelineEvent;
+
+const ds = @import("ds");
+const Timeline = ds.DaryHeap(TimelineEvent, 8, void, entities.compareTimelineEvent);
+const SMAList = ds.SegmentedMultiArrayList;
+const PagedBitSet = ds.PagedBitSet;
 
 const Arg = argz.Argument;
 const ParseErrors = argz.ParseErrors;
@@ -34,7 +43,10 @@ const def = .{
         Arg([]const u8, "data", "Data file containing the network definition"),
     },
     .options = .{
-        argz.Option([]const u8, "name", "n", "", "Dataset name for trace folder (default: derived from data path)"),
+        argz.Option([]const u8, "output", "o", ".", "Dataset name for trace folder"),
+    },
+    .flags = .{
+        argz.Flag("clean", "c", "Delete the .bin output"),
     },
 };
 
@@ -83,11 +95,14 @@ pub fn main(init: std.process.Init) !void {
     const rng = prng.random();
 
     const startTimeWireData = Io.Timestamp.now(init.io, .real);
-    var graph: gn.Topology = try .create(init.io, gpa, arena, rng, sampled_topology);
-    defer graph.delete(gpa, arena);
+
+    // loads the users in memory
+    // loads followers in memory
+    const topology: Topology = try .create(arena, sampled_topology);
+    var state: SimState = try .create(init.io, arena, gpa, rng, sampled_topology);
+
     const elapsedTimeWireData = startTimeWireData.untilNow(init.io, .real);
 
-    // the lifetime of this data ends here
     var samp_top_var = sampled_topology;
     samp_top_var.delete(data_alloc);
     arena_json.deinit();
@@ -115,7 +130,7 @@ pub fn main(init: std.process.Init) !void {
     const propagation_name = "propagation_trace.bin";
 
     const data_dir = std.fs.path.dirname(args.data) orelse ".";
-    const dataset_name = if (args.name.len > 0) args.name else std.fs.path.basename(data_dir);
+    const dataset_name = if (args.output.len > 0) args.output else std.fs.path.basename(data_dir);
 
     // create traces/<dataset>/ base dir
     var traces_base_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -171,13 +186,14 @@ pub fn main(init: std.process.Init) !void {
     const prop_writer = &prop_file_writer.interface;
 
     const startTime = Io.Timestamp.now(init.io, .real);
-    try graph.reset(arena);
-    const results = try simulation.simulate(
+
+    const results = try simulation_tmp(
         gpa,
         arena,
         rng,
         &config,
-        &graph,
+        &topology,
+        &state,
         action_writer,
         session_writer,
         create_writer,
@@ -208,6 +224,36 @@ pub fn main(init: std.process.Init) !void {
     try bytesToJsonl(init.io, entities.TracePropagation, prop_bin, prop_jsonl);
 
     try stdout.flush();
+}
+
+// ─── simulation_tmp: compile-check stub for the new Graph + State split ─────
+fn simulation_tmp(
+    gpa: Allocator,
+    arena: Allocator,
+    rng: Random,
+    simconf: *const SimConfig,
+    topology: *const Topology,
+    state: *SimState,
+    action_trace: *Io.Writer,
+    session_trace: *Io.Writer,
+    create_trace: *Io.Writer,
+    propagate_trace: *Io.Writer,
+) !SimResults {
+    _ = gpa;
+    _ = arena;
+    _ = rng;
+    _ = simconf;
+    _ = action_trace;
+    _ = session_trace;
+    _ = create_trace;
+    _ = propagate_trace;
+
+    std.debug.print(
+        "simulation_tmp: Graph wired — {d} users, {d} edges, {d} timelines.\n",
+        .{ state.users.len, topology.csr.len, state.timelines.len },
+    );
+
+    @panic("simulation_tmp: stub — replace with real implementation");
 }
 
 /// this probably could be much more prettier if I passed the Io.Writer/Io.Reader by parameter, and I

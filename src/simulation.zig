@@ -12,11 +12,14 @@ const dist = @import("distributions");
 
 const config = @import("config.zig");
 const entities = @import("entities.zig");
-const gn = @import("graph_network.zig");
+const Topology = @import("graph_network.zig").Topology;
+
+const ds_pkg = @import("ds");
+const SMAList = ds_pkg.SegmentedMultiArrayList;
+const PagedBitSet = ds_pkg.PagedBitSet;
 
 const SimResults = config.SimResults;
 const SimConfig = config.SimConfig;
-const Topology = gn.Topology;
 
 const Precision = config.Precision;
 
@@ -194,8 +197,6 @@ fn stageOne(
 
         switch (current_event.type) {
             .create => {
-
-
                 const new_post_id = metrics.post_count;
 
                 try graph.posts.append(arena, .{ .id = new_post_id, .author = current_uid });

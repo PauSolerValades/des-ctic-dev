@@ -1,0 +1,174 @@
+const std = @import("std");
+const Io = std.Io;
+const Random = std.Random;
+const Allocator = std.mem.Allocator;
+const MultiArrayList = std.MultiArrayList;
+const ArrayList = std.ArrayList;
+
+const entities = @import("entities.zig");
+const BinaryGraph = @import("json_loading.zig").BinaryGraph;
+
+const ds = @import("ds");
+const Timeline = ds.DaryHeap(entities.TimelineEvent, 8, void, entities.compareTimelineEvent);
+const SMAList = ds.SegmentedMultiArrayList;
+const PagedBitSet = ds.PagedBitSet;
+
+const User = entities.User;
+const Post = entities.Post;
+
+fn fillPareto(io: std.Io, filename: []const u8, shape_buff: []f64, scale_buff: []f64) !void {
+    var buf: [32 * 10000]u8 = undefined;
+    const contents = try std.Io.Dir.readFile(std.Io.Dir.cwd(), io, filename, &buf);
+    var tok = std.mem.tokenizeSequence(u8, contents, "\n");
+    var index: usize = 0;
+    while (tok.next()) |line| {
+        var values = std.mem.tokenizeAny(u8, line, " \t");
+
+        const shape_str = values.next() orelse continue;
+        const scale_str = values.next() orelse continue;
+
+        shape_buff[index] = try std.fmt.parseFloat(f64, shape_str);
+        scale_buff[index] = try std.fmt.parseFloat(f64, scale_str);
+        index += 1;
+    }
+}
+
+pub const Topology = struct {
+    csr: []u32,
+    start: []u32,
+
+    pub fn create(arena: Allocator, data: BinaryGraph) !@This() {
+        var followers: []u32 = try arena.alloc(u32, data.num_edges);
+        var followers_start: []u32 = try arena.alloc(u32, data.num_nodes);
+
+        // as its temporal and I don't want to clutter the precious arena, lets init one in itself
+        var gpa: std.heap.DebugAllocator(.{}) = .init;
+        const allocator = gpa.allocator();
+        defer {
+            const deinit_status = gpa.deinit();
+            //fail test; can't try in defer as defer is executed after we return
+            if (deinit_status == .leak) @panic("OH GOD PLEASE NO, NO");
+        }
+        // temporary list of arraylists to hold the followers:
+        var tmp_followers: []ArrayList(u32) = try allocator.alloc(ArrayList(u32), data.num_nodes);
+        for (0..tmp_followers.len) |i| {
+            tmp_followers[i] = .empty;
+        }
+        defer {
+            for (tmp_followers) |*f| {
+                f.deinit(allocator);
+            }
+            allocator.free(tmp_followers);
+        }
+
+        var ei: usize = 0;
+        while (ei < data.num_edges) : (ei += 2) {
+            const actor_id = data.edges[ei];
+            const subject_id = data.edges[ei + 1];
+            try tmp_followers[subject_id].append(allocator, @intCast(actor_id));
+        }
+
+        var acc: usize = 0;
+        for (tmp_followers, 0..) |follow, i| {
+            const follower_count = follow.items.len;
+            followers_start[i] = @intCast(acc);
+            @memcpy(followers[acc .. acc + follower_count], follow.items);
+            acc += follower_count;
+        }
+
+        return Topology{
+            .csr = followers,
+            .start = followers_start,
+        };
+    }
+
+    pub fn delete(self: *@This(), arena: Allocator) void {
+        arena.free(self.csr);
+        arena.free(self.start);
+    }
+};
+
+pub const SimState = struct {
+    users: MultiArrayList(User),
+    timelines: []Timeline,
+    posts: SMAList(Post, 16),
+    user_seen_post: PagedBitSet(16),
+    user_interact_post: PagedBitSet(16),
+
+    pub fn create(io: Io, arena: Allocator, gpa: Allocator, rng: Random, data: BinaryGraph) !@This() {
+        var users: std.MultiArrayList(User) = try .initCapacity(arena, data.num_nodes);
+        try wireUsers(io, rng, data, &users);
+
+        var timelines: []Timeline = try gpa.alloc(Timeline, users.len);
+
+        for (0..timelines.len) |i| {
+            timelines[i] = .empty;
+            try timelines[i].ensureTotalCapacity(gpa, 1024);
+        }
+
+        const posts: SMAList(Post, 16) = .empty;
+        const seen_matrix: PagedBitSet(16) = try .initPages(arena, users.len, 16);
+        const interacted_matrix: PagedBitSet(16) = try .initPages(arena, users.len, 16);
+
+        return SimState{
+            .users = users,
+            .timelines = timelines,
+            .posts = posts,
+            .user_seen_post = seen_matrix,
+            .user_interact_post = interacted_matrix,
+        };
+    }
+
+    /// every user in Size_monotonic.bin is in id order, that's perfect for us.
+    fn wireUsers(io: Io, rng: Random, data: BinaryGraph, users: *MultiArrayList(User)) !void {
+        const sample_size = 10000;
+        var session_length_scale: [sample_size]f64 = undefined;
+        var session_length_shape: [sample_size]f64 = undefined;
+        try fillPareto(io, "params/session_duration_params.txt", &session_length_shape, &session_length_scale);
+
+        var session_gap_scale: [sample_size]f64 = undefined;
+        var session_gap_shape: [sample_size]f64 = undefined;
+        try fillPareto(io, "params/inter_session_params.txt", &session_gap_shape, &session_gap_scale);
+
+        var creation_scale: [sample_size]f64 = undefined;
+        var creation_shape: [sample_size]f64 = undefined;
+        try fillPareto(io, "params/inter_creation_params.txt", &creation_shape, &creation_scale);
+
+        for (data.user_ids) |id| {
+            const u_session_length = rng.uintLessThan(usize, sample_size);
+            const shape_session_length = session_length_shape[u_session_length];
+            const scale_session_length = session_length_scale[u_session_length];
+
+            const u_session_gap = rng.uintLessThan(usize, sample_size);
+            const shape_session_gap = session_gap_shape[u_session_gap];
+            const scale_session_gap = session_gap_scale[u_session_gap];
+
+            const u_creation = rng.uintLessThan(usize, sample_size);
+            const shape_creation = creation_shape[u_creation];
+            const scale_creation = creation_scale[u_creation];
+            // pick a random number for all of the three lists
+            const u = User{
+                .id = id,
+
+                .session_duration = .init(shape_session_length, scale_session_length),
+                .inter_session_time = .init(shape_session_gap, scale_session_gap),
+                .inter_creation_time = .init(shape_creation, scale_creation),
+            };
+            users.appendAssumeCapacity(u);
+        }
+    }
+
+    pub fn delete(self: *@This(), arena: Allocator, gpa: Allocator) void {
+        self.users.deinit(arena);
+        arena.free(self.followers);
+
+        for (self.timelines) |timeline| {
+            timeline.deinit(gpa);
+        }
+        gpa.free(self.timelines);
+
+        self.user_seen_post.deinit(arena);
+        self.user_interacted_post.deinit(arena);
+        self.posts.deinit(arena);
+    }
+};

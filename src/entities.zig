@@ -1,11 +1,13 @@
 const std = @import("std");
 
-const Heap = @import("heap").Heap;
+const Heap = @import("ds").Heap;
 const stats = @import("distributions");
 
 const Pareto = stats.Pareto;
 
 const config = @import("config.zig");
+
+const ds = @import("ds");
 
 const Order = std.math.Order;
 const ArrayList = std.ArrayList;
@@ -16,10 +18,7 @@ pub const Index: type = u32;
 
 pub const User = struct {
     id: Index,
-    follower_start: Index,
-
     is_online: bool = false,
-
     session_gen: u32 = 0,
 
     session_duration: Pareto(f64),
