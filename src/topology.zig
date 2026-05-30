@@ -6,7 +6,7 @@ const MultiArrayList = std.MultiArrayList;
 const ArrayList = std.ArrayList;
 
 const entities = @import("entities.zig");
-const BinaryGraph = @import("json_loading.zig").BinaryGraph;
+const BinaryGraph = @import("topology_loading.zig").BinaryGraph;
 
 const ds = @import("ds");
 const Timeline = ds.DaryHeap(entities.TimelineEvent, 8, void, entities.compareTimelineEvent);
@@ -169,5 +169,18 @@ pub const SimState = struct {
         self.user_seen_post.deinit(arena);
         self.user_interact_post.deinit(arena);
         self.posts.deinit(arena);
+    }
+
+    pub fn reset(self: *@This()) void {
+        for (0..self.users.len) |i| {
+            self.users.items(.is_online)[i] = false;
+            self.users.items(.session_gen)[i] = 0;
+            self.users.items(.num_posts)[i] = 0;
+            self.users.items(.session_start_time)[i] = 0.0;
+        }
+
+        self.posts.clearRetainingCapacity();
+        self.user_seen_post.clearRetainingCapacity();
+        self.user_interact_post.clearRetainingCapacity();
     }
 };

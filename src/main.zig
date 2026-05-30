@@ -1,39 +1,24 @@
 const std = @import("std");
-const json = std.json;
-const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
 const Random = std.Random;
-const eql = std.mem.eql;
 const Io = std.Io;
 
 const argz = @import("eazy_args");
 
 const structs = @import("config.zig");
-
 const simulation = @import("simulation.zig");
-
-const loader = @import("json_loading.zig");
+const loader = @import("topology_loading.zig");
 const entities = @import("entities.zig");
-
 const topo = @import("topology.zig");
 
-const Distribution = structs.Distribution;
 const SimConfig = structs.SimConfig;
-const SimResults = structs.SimResults;
 
 const Topology = topo.Topology;
 const SimState = topo.SimState;
 
-const User = simulation.User;
-const Post = simulation.Post;
-const TimelineEvent = simulation.TimelineEvent;
-
-const ds = @import("ds");
-const Timeline = ds.DaryHeap(TimelineEvent, 8, void, entities.compareTimelineEvent);
-const SMAList = ds.SegmentedMultiArrayList;
-const PagedBitSet = ds.PagedBitSet;
-
 const Arg = argz.Argument;
+const Opt = argz.Option;
+const Flag = argz.Flag;
+
 const ParseErrors = argz.ParseErrors;
 
 const def = .{
@@ -43,10 +28,12 @@ const def = .{
         Arg([]const u8, "data", "Data file containing the network definition"),
     },
     .options = .{
-        argz.Option([]const u8, "output", "o", ".", "Dataset name for trace folder"),
+        Opt([]const u8, "output", "o", ".", "Dataset name for trace folder"),
+        Opt(usize, "runs", "n", 1, "Runs to execute the simulation"),
+        Opt(usize, "threads", "t", 1, "Number of concurrent executions"),
     },
     .flags = .{
-        argz.Flag("clean", "c", "Delete the .bin output"),
+        Flag("clean", "c", "Delete the .bin output"),
     },
 };
 
@@ -117,17 +104,6 @@ pub fn main(init: std.process.Init) !void {
     try stdout.writeAll("Running the simulation\n");
     try stdout.flush();
 
-    // create the results folder
-    // cwd.access(init.io, "results", .{}) catch |err| switch (err) {
-    //     error.FileNotFound => try cwd.createDir(init.io, "results", .{ .mode = Oo755} ),
-    //     else => return err,
-    // };
-
-    // const timestamp = Io.Clock.real.now(init.io);
-    // buffers to hold the formatted file paths to avoid dynamic memory
-    // var trace_path_buffer: [256]u8 = undefined;
-    // const traca_path = try std.fmt.bufPrint(&traca_path_buffer, "traca_{d}.txt", .{timestamp});
-
     const action_name = "action_trace.bin";
     const session_name = "session_trace.bin";
     const create_name = "create_trace.bin";
@@ -157,76 +133,82 @@ pub fn main(init: std.process.Init) !void {
     var times_buf: [256]u8 = undefined;
     var times_writer = times_file.writer(init.io, &times_buf);
     const times_w = &times_writer.interface;
+    try times_w.writeAll("data_load data_wire time\n");
 
-    // Paths for binary traces inside the run dir
-    var action_bin_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const action_bin = try std.fmt.bufPrint(&action_bin_buf, "{s}/{s}", .{ run_dir, action_name });
-    var session_bin_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const session_bin = try std.fmt.bufPrint(&session_bin_buf, "{s}/{s}", .{ run_dir, session_name });
-    var create_bin_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const create_bin = try std.fmt.bufPrint(&create_bin_buf, "{s}/{s}", .{ run_dir, create_name });
-    var prop_bin_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const prop_bin = try std.fmt.bufPrint(&prop_bin_buf, "{s}/{s}", .{ run_dir, propagation_name });
+    for (0..args.runs) |i| {
+        // Paths for binary traces inside the run dir
+        var action_bin_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const action_bin = try std.fmt.bufPrint(&action_bin_buf, "{s}/{d}-{s}", .{ run_dir, i, action_name });
+        var session_bin_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const session_bin = try std.fmt.bufPrint(&session_bin_buf, "{s}/{d}-{s}", .{ run_dir, i, session_name });
+        var create_bin_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const create_bin = try std.fmt.bufPrint(&create_bin_buf, "{s}/{d}-{s}", .{ run_dir, i, create_name });
+        var prop_bin_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const prop_bin = try std.fmt.bufPrint(&prop_bin_buf, "{s}/{d}-{s}", .{ run_dir, i, propagation_name });
 
-    var action_buffer: [64 * 1024]u8 = undefined;
-    var session_buffer: [64 * 1024]u8 = undefined;
-    var create_buffer: [64 * 1024]u8 = undefined;
-    var propagation_buffer: [64 * 1024]u8 = undefined;
+        var action_buffer: [64 * 1024]u8 = undefined;
+        var session_buffer: [64 * 1024]u8 = undefined;
+        var create_buffer: [64 * 1024]u8 = undefined;
+        var propagation_buffer: [64 * 1024]u8 = undefined;
 
-    const action_file = try cwd.createFile(init.io, action_bin, .{});
-    var action_file_writer = action_file.writer(init.io, &action_buffer);
-    const action_writer = &action_file_writer.interface;
+        const action_file = try cwd.createFile(init.io, action_bin, .{});
+        var action_file_writer = action_file.writer(init.io, &action_buffer);
+        const action_writer = &action_file_writer.interface;
 
-    const session_file = try cwd.createFile(init.io, session_bin, .{});
-    var session_file_writer = session_file.writer(init.io, &session_buffer);
-    const session_writer = &session_file_writer.interface;
+        const session_file = try cwd.createFile(init.io, session_bin, .{});
+        var session_file_writer = session_file.writer(init.io, &session_buffer);
+        const session_writer = &session_file_writer.interface;
 
-    const create_file = try cwd.createFile(init.io, create_bin, .{});
-    var create_file_writer = create_file.writer(init.io, &create_buffer);
-    const create_writer = &create_file_writer.interface;
+        const create_file = try cwd.createFile(init.io, create_bin, .{});
+        var create_file_writer = create_file.writer(init.io, &create_buffer);
+        const create_writer = &create_file_writer.interface;
 
-    const prop_file = try cwd.createFile(init.io, prop_bin, .{});
-    var prop_file_writer = prop_file.writer(init.io, &propagation_buffer);
-    const prop_writer = &prop_file_writer.interface;
+        const prop_file = try cwd.createFile(init.io, prop_bin, .{});
+        var prop_file_writer = prop_file.writer(init.io, &propagation_buffer);
+        const prop_writer = &prop_file_writer.interface;
 
-    const startTime = Io.Timestamp.now(init.io, .real);
-    const results = try simulation.simulate(
-        gpa,
-        arena,
-        rng,
-        &config,
-        &topology,
-        &state,
-        action_writer,
-        session_writer,
-        create_writer,
-        prop_writer,
-    );
-    const elapsedTime = startTime.untilNow(init.io, .real);
+        const startTime = Io.Timestamp.now(init.io, .real);
+        const results = try simulation.simulate(
+            gpa,
+            arena,
+            rng,
+            &config,
+            &topology,
+            &state,
+            action_writer,
+            session_writer,
+            create_writer,
+            prop_writer,
+        );
+        const elapsedTime = startTime.untilNow(init.io, .real);
 
-    try stdout.print("Run: {d} ms\n", .{elapsedTime.toMilliseconds()});
-    try times_w.print("{d} {d} {d}\n", .{ elapsedTimeLoadData.toMilliseconds(), elapsedTimeWireData.toMilliseconds(), elapsedTime.toMilliseconds() });
+        try stdout.print("Run: {d} ms\n", .{elapsedTime.toMilliseconds()});
+        try times_w.print("{d} {d} {d}\n", .{ elapsedTimeLoadData.toMilliseconds(), elapsedTimeWireData.toMilliseconds(), elapsedTime.toMilliseconds() });
+        try stdout.print("{f}\n", .{results});
+        try stdout.flush();
+
+        // Convert binary traces to JSONL
+        try stdout.writeAll("Converting traces into JSONL\n");
+        var jsonl_buf: [std.fs.max_path_bytes]u8 = undefined;
+
+        const action_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/action_trace.jsonl", .{run_dir});
+        try bytesToJsonl(init.io, entities.TraceAction, action_bin, action_jsonl);
+
+        const session_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/session_trace.jsonl", .{run_dir});
+        try bytesToJsonl(init.io, entities.TraceSession, session_bin, session_jsonl);
+
+        const create_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/create_trace.jsonl", .{run_dir});
+        try bytesToJsonl(init.io, entities.TraceCreate, create_bin, create_jsonl);
+
+        const prop_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/propagate_trace.jsonl", .{run_dir});
+        try bytesToJsonl(init.io, entities.TracePropagation, prop_bin, prop_jsonl);
+
+        try stdout.flush();
+
+        state.reset();
+    }
+
     try times_w.flush();
-    try stdout.print("{f}\n", .{results});
-    try stdout.flush();
-
-    // Convert binary traces to JSONL
-    try stdout.writeAll("Converting traces into JSONL\n");
-    var jsonl_buf: [std.fs.max_path_bytes]u8 = undefined;
-
-    const action_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/action_trace.jsonl", .{run_dir});
-    try bytesToJsonl(init.io, entities.TraceAction, action_bin, action_jsonl);
-
-    const session_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/session_trace.jsonl", .{run_dir});
-    try bytesToJsonl(init.io, entities.TraceSession, session_bin, session_jsonl);
-
-    const create_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/create_trace.jsonl", .{run_dir});
-    try bytesToJsonl(init.io, entities.TraceCreate, create_bin, create_jsonl);
-
-    const prop_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/propagate_trace.jsonl", .{run_dir});
-    try bytesToJsonl(init.io, entities.TracePropagation, prop_bin, prop_jsonl);
-
-    try stdout.flush();
 }
 
 /// this probably could be much more prettier if I passed the Io.Writer/Io.Reader by parameter, and I
@@ -240,6 +222,8 @@ fn bytesToJsonl(io: Io, comptime T: type, read_file: []const u8, write_file: []c
     const writer = &jsonl_file_writer.interface;
 
     if (Io.Dir.cwd().openFile(io, read_file, .{})) |file| {
+        defer file.close(io);
+
         var buf: [4 * 1024]u8 = undefined;
         var reader: Io.File.Reader = file.reader(io, &buf);
         const ri = &reader.interface;
