@@ -28,8 +28,9 @@ const def = .{
         Arg([]const u8, "data", "Data file containing the network definition"),
     },
     .options = .{
-        Opt([]const u8, "output", "o", ".", "Dataset name for trace folder"),
+        Opt([]const u8, "output", "o", "./traces", "Dataset name for trace folder"),
         Opt(usize, "runs", "n", 1, "Runs to execute the simulation"),
+        Opt(usize, "workers", "w", 1, "Units of parallelism"),
         Opt(usize, "threads", "t", 1, "Number of concurrent executions"),
     },
     .flags = .{
@@ -78,22 +79,14 @@ pub fn main(init: std.process.Init) !void {
         break :blk os_seed;
     };
 
-    var prng = Random.DefaultPrng.init(seed);
-    const rng = prng.random();
-
     const startTimeWireData = Io.Timestamp.now(init.io, .real);
 
     // loads followers in memory
-    const topology: Topology = try .create(arena, sampled_topology);
-    defer {
-        var vartop = topology;
-        vartop.delete(arena);
-    }
-    var state: SimState = try .create(init.io, arena, gpa, rng, sampled_topology);
-    defer state.delete(arena, gpa);
-
+    var topology: Topology = try .create(arena, sampled_topology);
+    defer topology.delete(arena);
     const elapsedTimeWireData = startTimeWireData.untilNow(init.io, .real);
 
+    // once the Topology is done, we can deallocate the sampled_topology
     var samp_top_var = sampled_topology;
     samp_top_var.delete(data_alloc);
     arena_json.deinit();
@@ -101,20 +94,14 @@ pub fn main(init: std.process.Init) !void {
     try stdout.print("Time Elapsed Wiring Data: {d} ms\n", .{elapsedTimeWireData.toMilliseconds()});
     try stdout.flush();
 
-    try stdout.writeAll("Running the simulation\n");
+    try stdout.print("Starting the simulation. Running {d} times\n", .{args.runs});
     try stdout.flush();
-
-    const action_name = "action_trace.bin";
-    const session_name = "session_trace.bin";
-    const create_name = "create_trace.bin";
-    const propagation_name = "propagation_trace.bin";
-
     const data_dir = std.fs.path.dirname(args.data) orelse ".";
     const dataset_name = if (args.output.len > 0) args.output else std.fs.path.basename(data_dir);
 
     // create traces/<dataset>/ base dir
     var traces_base_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const traces_base = try std.fmt.bufPrint(&traces_base_buf, "traces/{s}", .{dataset_name});
+    const traces_base = try std.fmt.bufPrint(&traces_base_buf, "{s}", .{dataset_name});
     cwd.createDir(init.io, "traces", .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
@@ -135,55 +122,147 @@ pub fn main(init: std.process.Init) !void {
     const times_w = &times_writer.interface;
     try times_w.writeAll("data_load data_wire time\n");
 
-    for (0..args.runs) |i| {
+    var threaded: Io.Threaded = .init(gpa, .{});
+    defer threaded.deinit();
+    const tio = threaded.io();
+
+    var mutex_times: Io.Mutex = .init;
+    var mutex_stdout: Io.Mutex = .init;
+
+    // the array has to have as many jobs as args.workers
+    var futures = try gpa.alloc(@TypeOf(try tio.concurrent(simulationBatch, undefined)), args.workers);
+    defer gpa.free(futures);
+
+    const runs_per_worker = args.runs / args.workers;
+    const total_runs = args.runs;
+
+    for (0..args.workers) |i| {
+        const start_idx = i * runs_per_worker;
+        const runs = if (i == args.workers - 1)
+            total_runs - start_idx
+        else
+            runs_per_worker;
+
+        const batch_args = .{
+            &mutex_times,
+            &mutex_stdout,
+            &topology,
+            &config,
+            seed,
+            runs,
+            start_idx,
+            run_dir,
+        };
+        futures[i] = try tio.concurrent(simulationBatch, batch_args);
+    }
+
+    for (0..args.workers) |i| {
+        try futures[i].await(tio);
+    }
+
+    try times_w.flush();
+}
+
+fn simulationBatch(
+    mutex_times: *Io.Mutex,
+    mutex_stdout: *Io.Mutex,
+    topology: *const Topology,
+    config: *const SimConfig,
+    seed: u64,
+    runs: usize,
+    start_idx: usize,
+    run_dir: []const u8,
+) !void {
+    _ = mutex_times;
+    _ = mutex_stdout;
+
+    var aa: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer aa.deinit();
+    const arena = aa.allocator();
+
+    var general: std.heap.DebugAllocator(.{}) = .init;
+    defer {
+        const deinit_status = general.deinit();
+        //fail test; can't try in defer as defer is executed after we return
+        if (deinit_status == .leak) @panic("TEST FAIL");
+    }
+    const gpa = general.allocator();
+
+    var threaded: Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
+    var buffer: [1024]u8 = undefined;
+    var stdout_writer = Io.File.stdout().writer(io, &buffer);
+    const stdout = &stdout_writer.interface;
+
+    // all this setup is to ensure hardware reproducilbility even if it costs some more cycles. see the documentaiton
+    var prng: Random.DefaultPrng = .init(seed);
+
+    var state: SimState = try .create(io, arena, gpa, prng.random(), topology);
+    defer state.delete(arena, gpa);
+
+    const action_name = "action_trace.bin";
+    const session_name = "session_trace.bin";
+    const create_name = "create_trace.bin";
+    const propagation_name = "propagation_trace.bin";
+
+    for (start_idx..start_idx + runs) |i| {
+        const run_idx = start_idx + i;
+
+        const run_seed = seed +% std.hash.Wyhash.hash(0, std.mem.asBytes(&run_idx));
+        prng.seed(run_seed);
+
+        const rng = prng.random();
+
         // Paths for binary traces inside the run dir
         var action_bin_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const action_bin = try std.fmt.bufPrint(&action_bin_buf, "{s}/{d}-{s}", .{ run_dir, i, action_name });
+        const action_bin = try std.fmt.bufPrint(&action_bin_buf, "{s}/{d}-{s}", .{ run_dir, run_idx, action_name });
         var session_bin_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const session_bin = try std.fmt.bufPrint(&session_bin_buf, "{s}/{d}-{s}", .{ run_dir, i, session_name });
+        const session_bin = try std.fmt.bufPrint(&session_bin_buf, "{s}/{d}-{s}", .{ run_dir, run_idx, session_name });
         var create_bin_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const create_bin = try std.fmt.bufPrint(&create_bin_buf, "{s}/{d}-{s}", .{ run_dir, i, create_name });
+        const create_bin = try std.fmt.bufPrint(&create_bin_buf, "{s}/{d}-{s}", .{ run_dir, run_idx, create_name });
         var prop_bin_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const prop_bin = try std.fmt.bufPrint(&prop_bin_buf, "{s}/{d}-{s}", .{ run_dir, i, propagation_name });
+        const prop_bin = try std.fmt.bufPrint(&prop_bin_buf, "{s}/{d}-{s}", .{ run_dir, run_idx, propagation_name });
 
         var action_buffer: [64 * 1024]u8 = undefined;
         var session_buffer: [64 * 1024]u8 = undefined;
         var create_buffer: [64 * 1024]u8 = undefined;
         var propagation_buffer: [64 * 1024]u8 = undefined;
 
-        const action_file = try cwd.createFile(init.io, action_bin, .{});
-        var action_file_writer = action_file.writer(init.io, &action_buffer);
+        const cwd = Io.Dir.cwd();
+        const action_file = try cwd.createFile(io, action_bin, .{});
+        var action_file_writer = action_file.writer(io, &action_buffer);
         const action_writer = &action_file_writer.interface;
 
-        const session_file = try cwd.createFile(init.io, session_bin, .{});
-        var session_file_writer = session_file.writer(init.io, &session_buffer);
+        const session_file = try cwd.createFile(io, session_bin, .{});
+        var session_file_writer = session_file.writer(io, &session_buffer);
         const session_writer = &session_file_writer.interface;
 
-        const create_file = try cwd.createFile(init.io, create_bin, .{});
-        var create_file_writer = create_file.writer(init.io, &create_buffer);
+        const create_file = try cwd.createFile(io, create_bin, .{});
+        var create_file_writer = create_file.writer(io, &create_buffer);
         const create_writer = &create_file_writer.interface;
 
-        const prop_file = try cwd.createFile(init.io, prop_bin, .{});
-        var prop_file_writer = prop_file.writer(init.io, &propagation_buffer);
+        const prop_file = try cwd.createFile(io, prop_bin, .{});
+        var prop_file_writer = prop_file.writer(io, &propagation_buffer);
         const prop_writer = &prop_file_writer.interface;
 
-        const startTime = Io.Timestamp.now(init.io, .real);
+        const startTime = Io.Timestamp.now(io, .real);
         const results = try simulation.simulate(
             gpa,
             arena,
             rng,
-            &config,
-            &topology,
+            config,
+            topology,
             &state,
             action_writer,
             session_writer,
             create_writer,
             prop_writer,
         );
-        const elapsedTime = startTime.untilNow(init.io, .real);
+        const elapsedTime = startTime.untilNow(io, .real);
 
-        try stdout.print("Run: {d} ms\n", .{elapsedTime.toMilliseconds()});
-        try times_w.print("{d} {d} {d}\n", .{ elapsedTimeLoadData.toMilliseconds(), elapsedTimeWireData.toMilliseconds(), elapsedTime.toMilliseconds() });
+        try stdout.print("[{d}] - Execution time: {d} ms\n", .{ run_idx, elapsedTime.toMilliseconds() });
+        //try times_w.print("{d} {d} {d}\n", .{ elapsedTimeLoadData.toMilliseconds(), elapsedTimeWireData.toMilliseconds(), elapsedTime.toMilliseconds() });
         try stdout.print("{f}\n", .{results});
         try stdout.flush();
 
@@ -191,28 +270,24 @@ pub fn main(init: std.process.Init) !void {
         try stdout.writeAll("Converting traces into JSONL\n");
         var jsonl_buf: [std.fs.max_path_bytes]u8 = undefined;
 
-        const action_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/action_trace.jsonl", .{run_dir});
-        try bytesToJsonl(init.io, entities.TraceAction, action_bin, action_jsonl);
+        const action_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/{d}-action_trace.jsonl", .{ run_dir, i });
+        try bytesToJsonl(io, entities.TraceAction, action_bin, action_jsonl);
 
-        const session_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/session_trace.jsonl", .{run_dir});
-        try bytesToJsonl(init.io, entities.TraceSession, session_bin, session_jsonl);
+        const session_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/{d}-session_trace.jsonl", .{ run_dir, i });
+        try bytesToJsonl(io, entities.TraceSession, session_bin, session_jsonl);
 
-        const create_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/create_trace.jsonl", .{run_dir});
-        try bytesToJsonl(init.io, entities.TraceCreate, create_bin, create_jsonl);
+        const create_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/{d}-create_trace.jsonl", .{ run_dir, i });
+        try bytesToJsonl(io, entities.TraceCreate, create_bin, create_jsonl);
 
-        const prop_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/propagate_trace.jsonl", .{run_dir});
-        try bytesToJsonl(init.io, entities.TracePropagation, prop_bin, prop_jsonl);
-
-        try stdout.flush();
-
-        state.reset();
+        const prop_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/{d}-propagate_trace.jsonl", .{ run_dir, i });
+        try bytesToJsonl(io, entities.TracePropagation, prop_bin, prop_jsonl);
     }
 
-    try times_w.flush();
+    return;
 }
 
 /// this probably could be much more prettier if I passed the Io.Writer/Io.Reader by parameter, and I
-/// could even reuse the buffers... but dunno, at least this is pretty efficient :D
+/// could even reuse the buffers... but dunno, at least this is ok :D
 fn bytesToJsonl(io: Io, comptime T: type, read_file: []const u8, write_file: []const u8) !void {
     const n = @sizeOf(T);
 

@@ -34,6 +34,8 @@ fn fillPareto(io: std.Io, filename: []const u8, shape_buff: []f64, scale_buff: [
 }
 
 pub const Topology = struct {
+    nodes: u32,
+    edges: u32,
     csr: []u32,
     start: []u32,
 
@@ -77,6 +79,8 @@ pub const Topology = struct {
         }
 
         return Topology{
+            .nodes = data.num_nodes,
+            .edges = data.num_edges,
             .csr = followers,
             .start = followers_start,
         };
@@ -95,9 +99,9 @@ pub const SimState = struct {
     user_seen_post: PagedBitSet(16),
     user_interact_post: PagedBitSet(16),
 
-    pub fn create(io: Io, arena: Allocator, gpa: Allocator, rng: Random, data: BinaryGraph) !@This() {
-        var users: std.MultiArrayList(User) = try .initCapacity(arena, data.num_nodes);
-        try wireUsers(io, rng, data, &users);
+    pub fn create(io: Io, arena: Allocator, gpa: Allocator, rng: Random, topology: *const Topology) !@This() {
+        var users: std.MultiArrayList(User) = try .initCapacity(arena, topology.nodes);
+        try wireUsers(io, rng, topology, &users);
 
         var timelines: []Timeline = try gpa.alloc(Timeline, users.len);
 
@@ -120,7 +124,7 @@ pub const SimState = struct {
     }
 
     /// every user in Size_monotonic.bin is in id order, that's perfect for us.
-    fn wireUsers(io: Io, rng: Random, data: BinaryGraph, users: *MultiArrayList(User)) !void {
+    fn wireUsers(io: Io, rng: Random, topology: *const Topology, users: *MultiArrayList(User)) !void {
         const sample_size = 10000;
         var session_length_scale: [sample_size]f64 = undefined;
         var session_length_shape: [sample_size]f64 = undefined;
@@ -134,7 +138,8 @@ pub const SimState = struct {
         var creation_shape: [sample_size]f64 = undefined;
         try fillPareto(io, "params/inter_creation_params.txt", &creation_shape, &creation_scale);
 
-        for (data.user_ids) |id| {
+        // iterate over the user_ids. As they are monotonically increasing its fine
+        for (0..topology.nodes) |id| {
             const u_session_length = rng.uintLessThan(usize, sample_size);
             const shape_session_length = session_length_shape[u_session_length];
             const scale_session_length = session_length_scale[u_session_length];
@@ -148,8 +153,7 @@ pub const SimState = struct {
             const scale_creation = creation_scale[u_creation];
             // pick a random number for all of the three lists
             const u = User{
-                .id = id,
-
+                .id = @intCast(id),
                 .session_duration = .init(shape_session_length, scale_session_length),
                 .inter_session_time = .init(shape_session_gap, scale_session_gap),
                 .inter_creation_time = .init(shape_creation, scale_creation),
