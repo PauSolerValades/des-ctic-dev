@@ -91,11 +91,9 @@ pub fn main(init: std.process.Init) !void {
     samp_top_var.delete(data_alloc);
     arena_json.deinit();
 
-    try stdout.print("Time Elapsed Wiring Data: {d} ms\n", .{elapsedTimeWireData.toMilliseconds()});
+    try stdout.print("Time Elapsed wiring topology: {d} ms\n", .{elapsedTimeWireData.toMilliseconds()});
     try stdout.flush();
 
-    try stdout.print("Starting the simulation. Running {d} times\n", .{args.runs});
-    try stdout.flush();
     const data_dir = std.fs.path.dirname(args.data) orelse ".";
     const dataset_name = if (args.output.len > 0) args.output else std.fs.path.basename(data_dir);
 
@@ -152,9 +150,12 @@ pub fn main(init: std.process.Init) !void {
             runs,
             start_idx,
             run_dir,
+            i,
         };
         futures[i] = try tio.concurrent(simulationBatch, batch_args);
+        try stdout.print("Spawned batch {d} with {d} runs\n", .{ i, runs });
     }
+    try stdout.flush();
 
     for (0..args.workers) |i| {
         try futures[i].await(tio);
@@ -172,6 +173,7 @@ fn simulationBatch(
     runs: usize,
     start_idx: usize,
     run_dir: []const u8,
+    worker_id: usize,
 ) !void {
     _ = mutex_times;
     _ = mutex_stdout;
@@ -206,7 +208,7 @@ fn simulationBatch(
     const create_name = "create_trace.bin";
     const propagation_name = "propagation_trace.bin";
 
-    for (start_idx..start_idx + runs) |i| {
+    for (0..runs) |i| {
         const run_idx = start_idx + i;
 
         const run_seed = seed +% std.hash.Wyhash.hash(0, std.mem.asBytes(&run_idx));
@@ -247,7 +249,7 @@ fn simulationBatch(
         const prop_writer = &prop_file_writer.interface;
 
         const startTime = Io.Timestamp.now(io, .real);
-        const results = try simulation.simulate(
+        _ = try simulation.simulate(
             gpa,
             arena,
             rng,
@@ -261,13 +263,12 @@ fn simulationBatch(
         );
         const elapsedTime = startTime.untilNow(io, .real);
 
-        try stdout.print("[{d}] - Execution time: {d} ms\n", .{ run_idx, elapsedTime.toMilliseconds() });
         //try times_w.print("{d} {d} {d}\n", .{ elapsedTimeLoadData.toMilliseconds(), elapsedTimeWireData.toMilliseconds(), elapsedTime.toMilliseconds() });
-        try stdout.print("{f}\n", .{results});
+        //try stdout.print("{f}\n", .{results});
         try stdout.flush();
 
         // Convert binary traces to JSONL
-        try stdout.writeAll("Converting traces into JSONL\n");
+        // try stdout.writeAll("Converting traces into JSONL\n");
         var jsonl_buf: [std.fs.max_path_bytes]u8 = undefined;
 
         const action_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/{d}-action_trace.jsonl", .{ run_dir, i });
@@ -281,6 +282,8 @@ fn simulationBatch(
 
         const prop_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/{d}-propagate_trace.jsonl", .{ run_dir, i });
         try bytesToJsonl(io, entities.TracePropagation, prop_bin, prop_jsonl);
+
+        try stdout.print("[Batch {d} - {d}] - Execution time: {d} ms\n", .{ worker_id, run_idx, elapsedTime.toMilliseconds() });
     }
 
     return;
