@@ -12,6 +12,8 @@ const topo = @import("topology.zig");
 
 const SimConfig = structs.SimConfig;
 
+const is_specific = std.mem.eql(u8, "specific", @import("build").build);
+
 const Topology = topo.Topology;
 const SimState = topo.SimState;
 
@@ -21,21 +23,43 @@ const Flag = argz.Flag;
 
 const ParseErrors = argz.ParseErrors;
 
-const def = .{
-    .name = "v4",
-    .description = "Bsky sim",
-    .required = .{
-        Arg([]const u8, "data", "Data file containing the network definition"),
-    },
-    .options = .{
-        Opt([]const u8, "output", "o", "./traces", "Dataset name for trace folder"),
-        Opt(usize, "runs", "n", 1, "Runs to execute the simulation"),
-        Opt(usize, "workers", "w", 1, "Units of parallelism"),
-        Opt(usize, "threads", "t", 1, "Number of concurrent executions"),
-    },
-    .flags = .{
-        Flag("clean", "c", "Delete the .bin output"),
-    },
+const def = blk: {
+    if (is_specific) {
+        break :blk .{
+            .name = "v4",
+            .description = "Bsky sim",
+            .required = .{
+                Arg([]const u8, "data", "Data file containing the network definition"),
+            },
+            .options = .{
+                Opt([]const u8, "output", "o", "./traces", "Dataset name for trace folder"),
+                Opt(usize, "runs", "n", 1, "Runs to execute the simulation"),
+                Opt(usize, "workers", "w", 1, "Units of parallelism"),
+                Opt(usize, "threads", "t", 1, "Number of concurrent executions"),
+            },
+            .flags = .{
+                Flag("clean", "c", "Delete the .bin output"),
+            },
+        };
+    } else {
+        break :blk .{
+            .name = "v4",
+            .description = "Bsky sim",
+            .required = .{
+                Arg([]const u8, "data", "Data file containing the network definition"),
+            },
+            .options = .{
+                Opt([]const u8, "config", "c", "", "Configuration to run"),
+                Opt([]const u8, "output", "o", "./traces", "Dataset name for trace folder"),
+                Opt(usize, "runs", "n", 1, "Runs to execute the simulation"),
+                Opt(usize, "workers", "w", 1, "Units of parallelism"),
+                Opt(usize, "threads", "t", 1, "Number of concurrent executions"),
+            },
+            .flags = .{
+                Flag("clean", "c", "Delete the .bin output"),
+            },
+        };
+    }
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -63,7 +87,18 @@ pub fn main(init: std.process.Init) !void {
     var arena_json: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
     const data_alloc = arena_json.allocator();
 
-    const config = try SimConfig.calibrate(gpa);
+    const config = blk: {
+        if (is_specific) {
+            break :blk try SimConfig.calibrate(gpa);
+        } else {
+            const parsed_config = loader.loadJson(arena, init.io, args.config, SimConfig) catch |err| {
+                try stderr.print("Error parsing config JSON file: {any}", .{err});
+                try stderr.flush();
+                std.process.exit(0);
+            };
+            break :blk parsed_config.value;
+        }
+    };
     defer config.deinit(gpa);
 
     const startTimeLoadData = Io.Timestamp.now(init.io, .real);
@@ -249,7 +284,7 @@ fn simulationBatch(
         const prop_writer = &prop_file_writer.interface;
 
         const startTime = Io.Timestamp.now(io, .real);
-        _ = try simulation.simulate(
+        const results = try simulation.simulate(
             gpa,
             arena,
             rng,
@@ -264,7 +299,7 @@ fn simulationBatch(
         const elapsedTime = startTime.untilNow(io, .real);
 
         //try times_w.print("{d} {d} {d}\n", .{ elapsedTimeLoadData.toMilliseconds(), elapsedTimeWireData.toMilliseconds(), elapsedTime.toMilliseconds() });
-        //try stdout.print("{f}\n", .{results});
+        try stdout.print("{f}\n", .{results});
         try stdout.flush();
 
         // Convert binary traces to JSONL

@@ -3,6 +3,7 @@ const std = @import("std");
 const Random = std.Random;
 const ArrayList = std.ArrayList;
 const Io = std.Io;
+const Allocator = std.mem.Allocator;
 
 const stats = @import("distributions");
 const assert = std.debug.assert;
@@ -20,10 +21,14 @@ const Pareto = stats.Pareto;
 const Constant = stats.Constant;
 const Normal = stats.Normal;
 const Interval = stats.Interval;
+
+const is_specific = std.mem.eql(u8, "specific", @import("build").build);
+pub const SimConfig = if (is_specific) SpecificSimConfig else GenericSimConfig;
+
 // accepts just f64 and f32 due to rng implementaiton
 pub const Precision = f32;
 
-pub const SimConfig = struct {
+pub const SpecificSimConfig = struct {
     seed: ?u64,
     // time marks
     horizon: f64, // max duration of the simulation
@@ -41,9 +46,9 @@ pub const SimConfig = struct {
     offline_startup_ratio: Precision, // which proportion of the users start on vacation
     creation_delay: ContDist(f64),
 
-    pub fn calibrate(gpa: std.mem.Allocator) !SimConfig {
-        return SimConfig{
-            .seed = null,
+    pub fn calibrate(gpa: Allocator) !SpecificSimConfig {
+        return SpecificSimConfig{
+            .seed = 42,
             .horizon = 6001,
             .duration = 5000,
             .warmup_time = 1000,
@@ -57,7 +62,7 @@ pub const SimConfig = struct {
         };
     }
 
-    pub fn deinit(self: *const SimConfig, gpa: std.mem.Allocator) void {
+    pub fn deinit(self: *const SpecificSimConfig, gpa: Allocator) void {
         self.user_policy.deinit(gpa);
     }
 
@@ -99,6 +104,74 @@ pub const SimConfig = struct {
         try writer.print("{s: <24}:  {d: <23.2}\n", .{ "Warm-up (Time)", self.warmup_time });
         try writer.print("{s: <24}:  {d: <23.2}\n", .{ "Duration", self.duration });
         try writer.print("{s: <24}:  {d: <23.2}\n", .{ "Horizon (Time)", self.horizon });
+    }
+};
+
+pub const GenericSimConfig = struct {
+    seed: ?u64,
+    // time marks
+    horizon: f64, // max duration of the simulation
+    duration: f64, // Duration of the simulation
+    warmup_time: f64, // time when warmup ends
+    // user related actions
+    user_policy: DiscDist(Precision, entities.Action), // probability of available actions of the user
+    user_inter_action: ContDist(Precision), // time between a user two actions
+    // to init posts
+    warmup_post_inter_creation: ContDist(f64), // time of the post created in the simulation
+    // delays on posts transmissions
+    propagation_delay: ContDist(f64), // time between an action over a post and showing up followers timeline
+    interaction_delay: ContDist(f64), // time between
+    // session configuration
+    offline_startup_ratio: Precision, // which proportion of the users start on vacation
+
+    creation_delay: ContDist(f64),
+
+    // misc config
+    trace_to_file: bool, // true is trace is written to a file. False not
+
+    pub fn isValid(self: @This()) bool {
+        assert(self.horizon > 0);
+        assert(self.duration > 0);
+        assert(self.warmup_time > 0);
+        assert(self.warmup_time + self.duration <= self.horizon);
+
+        // check that the Distribution picked to generate the posts is not able to
+        // generate a post later than warmup_time
+        return true;
+    }
+
+    pub fn format(
+        self: @This(),
+        writer: *std.Io.Writer,
+    ) !void {
+        try writer.writeAll("\n");
+        try writer.writeAll("+--------------------------+\n");
+        try writer.print("| SIMULATION CONFIGURATION |\n", .{});
+        try writer.writeAll("+--------------------------+\n");
+
+        try writer.writeAll("--- Warm up ---\n");
+        try writer.print("{s: <24}:  {f}\n", .{ "Time between post creation", self.warmup_post_inter_creation });
+
+        try writer.writeAll("--- User Actions Config ---\n");
+        try writer.print("{s: <24}:  {f}\n", .{ "User policy", self.user_policy });
+        try writer.print("{s: <24}:  {f}\n", .{ "Time between actions", self.user_inter_action });
+
+        try writer.writeAll("--- Post Propagation Delays ---\n");
+        try writer.print("{s: <24}:  {f}\n", .{ "Propagation delay", self.propagation_delay });
+        try writer.print("{s: <24}:  {f}\n", .{ "Interaction delay", self.interaction_delay });
+        try writer.print("{s: <24}:  {f}\n", .{ "Creation delay", self.creation_delay });
+
+        try writer.writeAll("--- User Sessions (Vacations) ---\n");
+        try writer.print("{s: <24}:  {d}\n", .{ "% starting offline", self.offline_startup_ratio });
+        try writer.writeAll("---------------------------------\n");
+        try writer.print("{s: <24}:  {d: <23.2}\n", .{ "Warm-up (Time)", self.warmup_time });
+        try writer.print("{s: <24}:  {d: <23.2}\n", .{ "Duration", self.duration });
+        try writer.print("{s: <24}:  {d: <23.2}\n", .{ "Horizon (Time)", self.horizon });
+    }
+
+    pub fn deinit(self: @This(), gpa: Allocator) void {
+        _ = self;
+        _ = gpa;
     }
 };
 
