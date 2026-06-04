@@ -151,6 +151,7 @@ pub fn main(init: std.process.Init) !void {
     var times_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const times_path = try std.fmt.bufPrint(&times_path_buf, "{s}/execution_times.ssv", .{run_dir});
     const times_file = try Io.Dir.cwd().createFile(init.io, times_path, .{ .truncate = true });
+    defer times_file.close(init.io);
 
     // write the header
     var times_buf: [64]u8 = undefined;
@@ -275,22 +276,26 @@ fn simulationBatch(
 
         const cwd = Io.Dir.cwd();
         const action_file = try cwd.createFile(io, action_bin, .{});
+        defer action_file.close(io);
         var action_file_writer = action_file.writer(io, &action_buffer);
         const action_writer = &action_file_writer.interface;
 
         const session_file = try cwd.createFile(io, session_bin, .{});
+        defer session_file.close(io);
         var session_file_writer = session_file.writer(io, &session_buffer);
         const session_writer = &session_file_writer.interface;
 
         const create_file = try cwd.createFile(io, create_bin, .{});
+        defer create_file.close(io);
         var create_file_writer = create_file.writer(io, &create_buffer);
         const create_writer = &create_file_writer.interface;
 
         const prop_file = try cwd.createFile(io, prop_bin, .{});
+        defer prop_file.close(io);
         var prop_file_writer = prop_file.writer(io, &propagation_buffer);
         const prop_writer = &prop_file_writer.interface;
 
-        const startTime = Io.Timestamp.now(io, .real);
+        const startTime = Io.Timestamp.now(io, .cpu_thread);
         _ = try simulation.simulate(
             gpa,
             arena,
@@ -303,7 +308,7 @@ fn simulationBatch(
             create_writer,
             prop_writer,
         );
-        const elapsedTime = startTime.untilNow(io, .real);
+        const elapsedTime = startTime.untilNow(io, .cpu_thread);
 
         try mutex_times.lock(io);
         try times_w.print("{d} {d} {d}\n", .{ worker_id, run_idx, elapsedTime.toMilliseconds() });
@@ -340,6 +345,7 @@ fn bytesToJsonl(io: Io, comptime T: type, read_file: []const u8, write_file: []c
 
     var jsonl_buffer: [4 * 1024]u8 = undefined;
     const jsonl_file = try Io.Dir.cwd().createFile(io, write_file, .{ .read = false });
+    defer jsonl_file.close(io);
     var jsonl_file_writer = jsonl_file.writer(io, &jsonl_buffer);
     const writer = &jsonl_file_writer.interface;
 
