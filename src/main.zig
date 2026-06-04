@@ -147,20 +147,27 @@ pub fn main(init: std.process.Init) !void {
     // log execution times per run
     const run_dir = traces_base;
 
+    // create the results files
     var times_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const times_path = try std.fmt.bufPrint(&times_path_buf, "{s}/execution_times.txt", .{run_dir});
-    const times_file = try cwd.createFile(init.io, times_path, .{});
-    var times_buf: [256]u8 = undefined;
-    var times_writer = times_file.writer(init.io, &times_buf);
+    const times_path = try std.fmt.bufPrint(&times_path_buf, "{s}/execution_times.ssv", .{run_dir});
+    const times_file = try Io.Dir.cwd().createFile(init.io, times_path, .{ .truncate = true });
+
+    // write the header
+    var times_buf: [64]u8 = undefined;
+    var times_writer = times_file.writerStreaming(init.io, &times_buf);
     const times_w = &times_writer.interface;
-    try times_w.writeAll("data_load data_wire time\n");
+    try times_w.writeAll("batch run time_ms\n");
+    try times_w.flush();
+
+    // keep the fd open — threads share it under mutex
+    // (each fd has its own cursor, so sharing it means
+    //  the kernel handles append-position for us)
 
     var threaded: Io.Threaded = .init(gpa, .{});
     defer threaded.deinit();
     const tio = threaded.io();
 
     var mutex_times: Io.Mutex = .init;
-    var mutex_stdout: Io.Mutex = .init;
 
     // the array has to have as many jobs as args.workers
     var futures = try gpa.alloc(@TypeOf(try tio.concurrent(simulationBatch, undefined)), args.workers);
@@ -178,7 +185,7 @@ pub fn main(init: std.process.Init) !void {
 
         const batch_args = .{
             &mutex_times,
-            &mutex_stdout,
+            times_file,
             &topology,
             &config,
             seed,
@@ -195,13 +202,11 @@ pub fn main(init: std.process.Init) !void {
     for (0..args.workers) |i| {
         try futures[i].await(tio);
     }
-
-    try times_w.flush();
 }
 
 fn simulationBatch(
     mutex_times: *Io.Mutex,
-    mutex_stdout: *Io.Mutex,
+    times_file: Io.File,
     topology: *const Topology,
     config: *const SimConfig,
     seed: u64,
@@ -210,9 +215,6 @@ fn simulationBatch(
     run_dir: []const u8,
     worker_id: usize,
 ) !void {
-    _ = mutex_times;
-    _ = mutex_stdout;
-
     var aa: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
     defer aa.deinit();
     const arena = aa.allocator();
@@ -237,6 +239,11 @@ fn simulationBatch(
 
     var state: SimState = try .create(io, arena, gpa, prng.random(), topology);
     defer state.delete(arena, gpa);
+
+    // use the shared fd — the kernel cursor tracks position for us
+    var times_buf: [256]u8 = undefined;
+    var times_writer = times_file.writerStreaming(io, &times_buf);
+    const times_w = &times_writer.interface;
 
     const action_name = "action_trace.bin";
     const session_name = "session_trace.bin";
@@ -298,7 +305,10 @@ fn simulationBatch(
         );
         const elapsedTime = startTime.untilNow(io, .real);
 
-        //try times_w.print("{d} {d} {d}\n", .{ elapsedTimeLoadData.toMilliseconds(), elapsedTimeWireData.toMilliseconds(), elapsedTime.toMilliseconds() });
+        try mutex_times.lock(io);
+        try times_w.print("{d} {d} {d}\n", .{ worker_id, run_idx, elapsedTime.toMilliseconds() });
+        try times_w.flush();
+        mutex_times.unlock(io);
         try stdout.print("{f}\n", .{results});
         try stdout.flush();
 
@@ -319,6 +329,7 @@ fn simulationBatch(
         try bytesToJsonl(io, entities.TracePropagation, prop_bin, prop_jsonl);
 
         try stdout.print("[Batch {d} - {d}] - Execution time: {d} ms\n", .{ worker_id, run_idx, elapsedTime.toMilliseconds() });
+        try stdout.flush();
     }
 
     return;
