@@ -183,6 +183,10 @@ pub const SimState = struct {
             self.users.items(.session_start_time)[i] = 0.0;
         }
 
+        for (0..self.timelines.len) |i| {
+            self.timelines[i].clearRetainingCapacity();
+        }
+
         self.posts.clearRetainingCapacity();
         self.user_seen_post.clearRetainingCapacity();
         self.user_interact_post.clearRetainingCapacity();

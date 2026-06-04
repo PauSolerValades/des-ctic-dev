@@ -333,6 +333,8 @@ fn simulationBatch(
 
         try stdout.print("[Batch {d} - {d}] - Execution time: {d} ms\n", .{ worker_id, run_idx, elapsedTime.toMilliseconds() });
         try stdout.flush();
+
+        state.reset();
     }
 
     return;
