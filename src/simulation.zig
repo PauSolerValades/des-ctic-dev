@@ -132,8 +132,10 @@ fn stageOne(
                 metrics.generated_events += 1;
 
                 const c = TraceCreate{ .time = t_clock.*, .user_id = current_uid, .post_id = metrics.post_count, .event_id = metrics.processed_events, .gen_id = gen_id };
-                const bytes = std.mem.asBytes(&c);
-                try create_trace.writeAll(bytes);
+                if (simconf.trace_to_file) {
+                    const bytes = std.mem.asBytes(&c);
+                    try create_trace.writeAll(bytes);
+                }
 
                 metrics.post_count += 1;
 
@@ -144,8 +146,10 @@ fn stageOne(
             .propagate => |post_id| {
                 try propagatePost(gpa, topology, state, t_clock.*, current_uid, post_id);
                 const p = TracePropagation{ .time = t_clock.*, .type = post_id, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id };
-                const bytes = std.mem.asBytes(&p);
-                try propagate_trace.writeAll(bytes);
+                if (simconf.trace_to_file) {
+                    const bytes = std.mem.asBytes(&p);
+                    try propagate_trace.writeAll(bytes);
+                }
             },
             else => unreachable,
         }
@@ -183,8 +187,10 @@ pub fn initSessions(
 
             // as user starts online, we log this into the session trace, it's both a generation and a processed event
             const s = TraceSession{ .time = t_clock, .type = .start, .user_id = @intCast(uid), .event_id = metrics.processed_events, .gen_id = metrics.generated_events, .backlog = 0 };
-            const bytes = std.mem.asBytes(&s);
-            try session_trace.writeAll(bytes);
+            if (simconf.trace_to_file) {
+                const bytes = std.mem.asBytes(&s);
+                try session_trace.writeAll(bytes);
+            }
             metrics.*.generated_events += 1;
             metrics.*.processed_events += 1;
 
@@ -256,8 +262,10 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
                 metrics.generated_events += 1;
 
                 const c = TraceCreate{ .time = t_clock, .user_id = current_uid, .post_id = new_post_id, .event_id = metrics.processed_events, .gen_id = gen_id };
-                const bytes = std.mem.asBytes(&c);
-                try create_trace.writeAll(bytes);
+                if (simconf.trace_to_file) {
+                    const bytes = std.mem.asBytes(&c);
+                    try create_trace.writeAll(bytes);
+                }
                 metrics.post_count += 1;
                 metrics.processed_events += 1;
 
@@ -276,8 +284,10 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
 
                 const backlog: u32 = if (ssn == .end) @intCast(state.timelines[current_uid].items.len) else 0;
                 const s = TraceSession{ .time = t_clock, .type = ssn, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id, .backlog = backlog };
-                const bytes = std.mem.asBytes(&s);
-                try session_trace.writeAll(bytes);
+                if (simconf.trace_to_file) {
+                    const bytes = std.mem.asBytes(&s);
+                    try session_trace.writeAll(bytes);
+                }
 
                 switch (ssn) {
                     .start => {
@@ -340,8 +350,10 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
 
                     if (post_id) |pid| {
                         const a = TraceAction{ .time = t_clock, .type = act, .user_id = current_uid, .post_id = pid, .event_id = metrics.processed_events, .gen_id = gen_id };
-                        const bytes = std.mem.asBytes(&a);
-                        try action_trace.writeAll(bytes);
+                        if (simconf.trace_to_file) {
+                            const bytes = std.mem.asBytes(&a);
+                            try action_trace.writeAll(bytes);
+                        }
 
                         // Always mark as seen (diagnostic: counts every exposure)
                         state.user_seen_post.set(current_uid, pid);
@@ -382,8 +394,10 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
                     state.users.items(.session_gen)[current_uid] += 1;
 
                     const s = TraceSession{ .time = t_clock, .type = .end, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id, .backlog = 0 };
-                    const bytes = std.mem.asBytes(&s);
-                    try session_trace.writeAll(bytes);
+                    if (simconf.trace_to_file) {
+                        const bytes = std.mem.asBytes(&s);
+                        try session_trace.writeAll(bytes);
+                    }
 
                     const bored_start = gen.eventSessionStart(rng, &state.users, t_clock, current_uid, state.users.items(.session_gen)[current_uid], metrics.generated_events);
                     try queue.add(gpa, bored_start);
@@ -396,17 +410,21 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
             .propagate => |post_id| {
                 try propagatePost(gpa, topology, state, t_clock, current_uid, post_id);
                 const p = TracePropagation{ .time = t_clock, .type = post_id, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id };
-                const bytes = std.mem.asBytes(&p);
-                try propagate_trace.writeAll(bytes);
+                if (simconf.trace_to_file) {
+                    const bytes = std.mem.asBytes(&p);
+                    try propagate_trace.writeAll(bytes);
+                }
                 metrics.processed_events += 1;
             },
         }
     }
 
-    try action_trace.flush();
-    try session_trace.flush();
-    try create_trace.flush();
-    try propagate_trace.flush();
+    if (simconf.trace_to_file) {
+        try action_trace.flush();
+        try session_trace.flush();
+        try create_trace.flush();
+        try propagate_trace.flush();
+    }
 
     var total_backlog: usize = 0;
     for (state.timelines) |*timeline| {

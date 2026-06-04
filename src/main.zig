@@ -47,9 +47,9 @@ const def = blk: {
             .description = "Bsky sim",
             .required = .{
                 Arg([]const u8, "data", "Data file containing the network definition"),
+                Arg([]const u8, "config", "Configuration filepath to run"),
             },
             .options = .{
-                Opt([]const u8, "config", "c", "", "Configuration to run"),
                 Opt([]const u8, "output", "o", "./traces", "Dataset name for trace folder"),
                 Opt(usize, "runs", "n", 1, "Runs to execute the simulation"),
                 Opt(usize, "workers", "w", 1, "Units of parallelism"),
@@ -291,7 +291,7 @@ fn simulationBatch(
         const prop_writer = &prop_file_writer.interface;
 
         const startTime = Io.Timestamp.now(io, .real);
-        const results = try simulation.simulate(
+        _ = try simulation.simulate(
             gpa,
             arena,
             rng,
@@ -309,8 +309,6 @@ fn simulationBatch(
         try times_w.print("{d} {d} {d}\n", .{ worker_id, run_idx, elapsedTime.toMilliseconds() });
         try times_w.flush();
         mutex_times.unlock(io);
-        try stdout.print("{f}\n", .{results});
-        try stdout.flush();
 
         // Convert binary traces to JSONL
         // try stdout.writeAll("Converting traces into JSONL\n");

@@ -46,6 +46,9 @@ pub const SpecificSimConfig = struct {
     offline_startup_ratio: Precision, // which proportion of the users start on vacation
     creation_delay: ContDist(f64),
 
+    // misc config
+    trace_to_file: bool, // true if trace is written to a file. False not
+
     pub fn calibrate(gpa: Allocator) !SpecificSimConfig {
         return SpecificSimConfig{
             .seed = 42,
@@ -59,6 +62,7 @@ pub const SpecificSimConfig = struct {
             .interaction_delay = Constant(f64).init(1.0),
             .offline_startup_ratio = 0.5,
             .creation_delay = .{ .constant = Constant(f64).init(1.0) },
+            .trace_to_file = true,
         };
     }
 
