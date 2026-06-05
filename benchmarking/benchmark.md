@@ -16,6 +16,10 @@ We are going to run the following programs 1010 times with the 100K dataset to o
 3. specific compiled with `trace_to_file = false`
 4. specific compiled with `trace_to_file = true`
 
-The runs will be executed sequentially with 8 workers and the same seed ---so the workload will be distributed accordingly--- and compiled in `ReleaseFast`.
+The 10K runs have been executed with 96 workers and have 5000 samples, compiled in ReleaseFast.
+The 100K runs have been executed with 20 workers and have been 1010 samples, compiled ReleaseFast. Specifically, 
+- specific runs have been compiled twice, one with the struct with `trace_to_file = true` and `false`.
+
+
 
 

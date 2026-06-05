@@ -8,7 +8,6 @@ const Allocator = std.mem.Allocator;
 const stats = @import("distributions");
 const assert = std.debug.assert;
 
-const main = @import("main.zig");
 const entities = @import("entities.zig");
 
 const ContDist = stats.ContinuousDistribution;
@@ -22,96 +21,10 @@ const Constant = stats.Constant;
 const Normal = stats.Normal;
 const Interval = stats.Interval;
 
-const is_specific = std.mem.eql(u8, "specific", @import("build").build);
-pub const SimConfig = if (is_specific) SpecificSimConfig else GenericSimConfig;
-
 // accepts just f64 and f32 due to rng implementaiton
 pub const Precision = f32;
 
-pub const SpecificSimConfig = struct {
-    seed: ?u64,
-    // time marks
-    horizon: f64, // max duration of the simulation
-    duration: f64, // Duration of the simulation
-    warmup_time: f64, // time when warmup ends
-    // user related actions
-    user_policy: Categorical(f64, entities.Action),
-    user_inter_action: Exponential(f64), // time between a user two actions
-    // to init posts
-    warmup_post_inter_creation: Uniform(f64), // time of the post created in the simulation
-    // delays on posts transmissions
-    propagation_delay: Constant(f64), // time between an action over a post and showing up followers timeline
-    interaction_delay: Constant(f64), // time between
-    // session configuration
-    offline_startup_ratio: Precision, // which proportion of the users start on vacation
-    creation_delay: ContDist(f64),
-
-    // misc config
-    trace_to_file: bool, // true if trace is written to a file. False not
-
-    pub fn calibrate(gpa: Allocator) !SpecificSimConfig {
-        return SpecificSimConfig{
-            .seed = 42,
-            .horizon = 6001,
-            .duration = 5000,
-            .warmup_time = 1000,
-            .user_policy = try Categorical(f64, entities.Action).init(gpa, &.{ 0.80, 0.188, 0.012 }, &.{ .ignore, .like, .repost }),
-            .user_inter_action = Exponential(f64).initMean(3.0),
-            .warmup_post_inter_creation = Uniform(f64).init(0.0, 1000.0, Interval.cc),
-            .propagation_delay = Constant(f64).init(1.0),
-            .interaction_delay = Constant(f64).init(1.0),
-            .offline_startup_ratio = 0.5,
-            .creation_delay = .{ .constant = Constant(f64).init(1.0) },
-            .trace_to_file = true,
-        };
-    }
-
-    pub fn deinit(self: *const SpecificSimConfig, gpa: Allocator) void {
-        self.user_policy.deinit(gpa);
-    }
-
-    pub fn isValid(self: @This()) bool {
-        assert(self.horizon > 0);
-        assert(self.duration > 0);
-        assert(self.warmup_time > 0);
-        assert(self.warmup_time + self.duration <= self.horizon);
-
-        // check that the Distribution picked to generate the posts is not able to
-        // generate a post later than warmup_time
-        return true;
-    }
-
-    pub fn format(
-        self: @This(),
-        writer: *std.Io.Writer,
-    ) !void {
-        try writer.writeAll("\n");
-        try writer.writeAll("+--------------------------+\n");
-        try writer.print("| SIMULATION CONFIGURATION |\n", .{});
-        try writer.writeAll("+--------------------------+\n");
-
-        try writer.writeAll("--- Warm up ---\n");
-        try writer.print("{s: <24}:  {f}\n", .{ "Time between post creation", self.warmup_post_inter_creation });
-
-        try writer.writeAll("--- User Actions Config ---\n");
-        try writer.print("{s: <24}:  {f}\n", .{ "User policy", self.user_policy });
-        try writer.print("{s: <24}:  {f}\n", .{ "Time between actions", self.user_inter_action });
-
-        try writer.writeAll("--- Post Propagation Delays ---\n");
-        try writer.print("{s: <24}:  {f}\n", .{ "Propagation delay", self.propagation_delay });
-        try writer.print("{s: <24}:  {f}\n", .{ "Interaction delay", self.interaction_delay });
-        try writer.print("{s: <24}:  {f}\n", .{ "Creation delay", self.creation_delay });
-
-        try writer.writeAll("--- User Sessions (Vacations) ---\n");
-        try writer.print("{s: <24}:  {d}\n", .{ "% starting offline", self.offline_startup_ratio });
-        try writer.writeAll("---------------------------------\n");
-        try writer.print("{s: <24}:  {d: <23.2}\n", .{ "Warm-up (Time)", self.warmup_time });
-        try writer.print("{s: <24}:  {d: <23.2}\n", .{ "Duration", self.duration });
-        try writer.print("{s: <24}:  {d: <23.2}\n", .{ "Horizon (Time)", self.horizon });
-    }
-};
-
-pub const GenericSimConfig = struct {
+pub const SimConfig = struct {
     seed: ?u64,
     // time marks
     horizon: f64, // max duration of the simulation

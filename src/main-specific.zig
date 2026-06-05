@@ -4,15 +4,15 @@ const Io = std.Io;
 
 const argz = @import("eazy_args");
 
-const structs = @import("config.zig");
+// const is_specific = std.mem.eql(u8, "specific", @import("build").build);
+
+const structs = @import("config-specific.zig");
 const simulation = @import("simulation.zig");
 const loader = @import("topology_loading.zig");
 const entities = @import("entities.zig");
 const topo = @import("topology.zig");
 
 const SimConfig = structs.SimConfig;
-
-const is_specific = std.mem.eql(u8, "specific", @import("build").build);
 
 const Topology = topo.Topology;
 const SimState = topo.SimState;
@@ -23,43 +23,20 @@ const Flag = argz.Flag;
 
 const ParseErrors = argz.ParseErrors;
 
-const def = blk: {
-    if (is_specific) {
-        break :blk .{
-            .name = "v4",
-            .description = "Bsky sim",
-            .required = .{
-                Arg([]const u8, "data", "Data file containing the network definition"),
-            },
-            .options = .{
-                Opt([]const u8, "output", "o", "./traces", "Dataset name for trace folder"),
-                Opt(usize, "runs", "n", 1, "Runs to execute the simulation"),
-                Opt(usize, "workers", "w", 1, "Units of parallelism"),
-                Opt(usize, "threads", "t", 1, "Number of concurrent executions"),
-            },
-            .flags = .{
-                Flag("clean", "c", "Delete the .bin output"),
-            },
-        };
-    } else {
-        break :blk .{
-            .name = "v4",
-            .description = "Bsky sim",
-            .required = .{
-                Arg([]const u8, "data", "Data file containing the network definition"),
-                Arg([]const u8, "config", "Configuration filepath to run"),
-            },
-            .options = .{
-                Opt([]const u8, "output", "o", "./traces", "Dataset name for trace folder"),
-                Opt(usize, "runs", "n", 1, "Runs to execute the simulation"),
-                Opt(usize, "workers", "w", 1, "Units of parallelism"),
-                Opt(usize, "threads", "t", 1, "Number of concurrent executions"),
-            },
-            .flags = .{
-                Flag("clean", "c", "Delete the .bin output"),
-            },
-        };
-    }
+const def = .{
+    .name = "specific",
+    .description = "Bskysim with the configuration struct known at compile time",
+    .required = .{
+        Arg([]const u8, "data", "Data file containing the network definition"),
+    },
+    .options = .{
+        Opt([]const u8, "output", "o", "./traces", "Dataset name for trace folder"),
+        Opt(usize, "runs", "n", 1, "Runs to execute the simulation"),
+        Opt(usize, "workers", "w", 1, "Units of parallelism"),
+    },
+    .flags = .{
+        Flag("clean", "c", "Delete the .bin output"),
+    },
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -87,18 +64,7 @@ pub fn main(init: std.process.Init) !void {
     var arena_json: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
     const data_alloc = arena_json.allocator();
 
-    const config = blk: {
-        if (is_specific) {
-            break :blk try SimConfig.calibrate(gpa);
-        } else {
-            const parsed_config = loader.loadJson(arena, init.io, args.config, SimConfig) catch |err| {
-                try stderr.print("Error parsing config JSON file: {any}", .{err});
-                try stderr.flush();
-                std.process.exit(0);
-            };
-            break :blk parsed_config.value;
-        }
-    };
+    const config = try SimConfig.calibrate(gpa);
     defer config.deinit(gpa);
 
     const startTimeLoadData = Io.Timestamp.now(init.io, .real);
@@ -116,12 +82,10 @@ pub fn main(init: std.process.Init) !void {
 
     const startTimeWireData = Io.Timestamp.now(init.io, .real);
 
-    // loads followers in memory
     var topology: Topology = try .create(arena, sampled_topology);
     defer topology.delete(arena);
     const elapsedTimeWireData = startTimeWireData.untilNow(init.io, .real);
 
-    // once the Topology is done, we can deallocate the sampled_topology
     var samp_top_var = sampled_topology;
     samp_top_var.delete(data_alloc);
     arena_json.deinit();
@@ -132,7 +96,6 @@ pub fn main(init: std.process.Init) !void {
     const data_dir = std.fs.path.dirname(args.data) orelse ".";
     const dataset_name = if (args.output.len > 0) args.output else std.fs.path.basename(data_dir);
 
-    // create traces/<dataset>/ base dir
     var traces_base_buf: [std.fs.max_path_bytes]u8 = undefined;
     const traces_base = try std.fmt.bufPrint(&traces_base_buf, "{s}", .{dataset_name});
     cwd.createDir(init.io, "traces", .default_dir) catch |err| switch (err) {
@@ -144,25 +107,18 @@ pub fn main(init: std.process.Init) !void {
         else => return err,
     };
 
-    // log execution times per run
     const run_dir = traces_base;
 
-    // create the results files
     var times_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const times_path = try std.fmt.bufPrint(&times_path_buf, "{s}/execution_times.ssv", .{run_dir});
     const times_file = try Io.Dir.cwd().createFile(init.io, times_path, .{ .truncate = true });
     defer times_file.close(init.io);
 
-    // write the header
     var times_buf: [64]u8 = undefined;
     var times_writer = times_file.writerStreaming(init.io, &times_buf);
     const times_w = &times_writer.interface;
     try times_w.writeAll("batch run time_ms\n");
     try times_w.flush();
-
-    // keep the fd open — threads share it under mutex
-    // (each fd has its own cursor, so sharing it means
-    //  the kernel handles append-position for us)
 
     var threaded: Io.Threaded = .init(gpa, .{});
     defer threaded.deinit();
@@ -170,7 +126,6 @@ pub fn main(init: std.process.Init) !void {
 
     var mutex_times: Io.Mutex = .init;
 
-    // the array has to have as many jobs as args.workers
     var futures = try gpa.alloc(@TypeOf(try tio.concurrent(simulationBatch, undefined)), args.workers);
     defer gpa.free(futures);
 
@@ -223,7 +178,6 @@ fn simulationBatch(
     var general: std.heap.DebugAllocator(.{}) = .init;
     defer {
         const deinit_status = general.deinit();
-        //fail test; can't try in defer as defer is executed after we return
         if (deinit_status == .leak) @panic("TEST FAIL");
     }
     const gpa = general.allocator();
@@ -235,13 +189,11 @@ fn simulationBatch(
     var stdout_writer = Io.File.stdout().writer(io, &buffer);
     const stdout = &stdout_writer.interface;
 
-    // all this setup is to ensure hardware reproducilbility even if it costs some more cycles. see the documentaiton
     var prng: Random.DefaultPrng = .init(seed);
 
     var state: SimState = try .create(io, arena, gpa, prng.random(), topology);
     defer state.delete(arena, gpa);
 
-    // use the shared fd — the kernel cursor tracks position for us
     var times_buf: [256]u8 = undefined;
     var times_writer = times_file.writerStreaming(io, &times_buf);
     const times_w = &times_writer.interface;
@@ -259,77 +211,97 @@ fn simulationBatch(
 
         const rng = prng.random();
 
-        // Paths for binary traces inside the run dir
-        var action_bin_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const action_bin = try std.fmt.bufPrint(&action_bin_buf, "{s}/{d}-{s}", .{ run_dir, run_idx, action_name });
-        var session_bin_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const session_bin = try std.fmt.bufPrint(&session_bin_buf, "{s}/{d}-{s}", .{ run_dir, run_idx, session_name });
-        var create_bin_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const create_bin = try std.fmt.bufPrint(&create_bin_buf, "{s}/{d}-{s}", .{ run_dir, run_idx, create_name });
-        var prop_bin_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const prop_bin = try std.fmt.bufPrint(&prop_bin_buf, "{s}/{d}-{s}", .{ run_dir, run_idx, propagation_name });
+        var elapsedTime: Io.Duration = undefined;
 
-        var action_buffer: [64 * 1024]u8 = undefined;
-        var session_buffer: [64 * 1024]u8 = undefined;
-        var create_buffer: [64 * 1024]u8 = undefined;
-        var propagation_buffer: [64 * 1024]u8 = undefined;
+        // Comptime branch: the compiler eliminates the unused path entirely.
+        // When trace_to_file=false, no files are created, no jsonl conversion.
+        if (config.trace_to_file) {
+            var action_bin_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const action_bin = try std.fmt.bufPrint(&action_bin_buf, "{s}/{d}-{s}", .{ run_dir, run_idx, action_name });
+            var session_bin_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const session_bin = try std.fmt.bufPrint(&session_bin_buf, "{s}/{d}-{s}", .{ run_dir, run_idx, session_name });
+            var create_bin_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const create_bin = try std.fmt.bufPrint(&create_bin_buf, "{s}/{d}-{s}", .{ run_dir, run_idx, create_name });
+            var prop_bin_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const prop_bin = try std.fmt.bufPrint(&prop_bin_buf, "{s}/{d}-{s}", .{ run_dir, run_idx, propagation_name });
 
-        const cwd = Io.Dir.cwd();
-        const action_file = try cwd.createFile(io, action_bin, .{});
-        defer action_file.close(io);
-        var action_file_writer = action_file.writer(io, &action_buffer);
-        const action_writer = &action_file_writer.interface;
+            var action_buffer: [64 * 1024]u8 = undefined;
+            var session_buffer: [64 * 1024]u8 = undefined;
+            var create_buffer: [64 * 1024]u8 = undefined;
+            var propagation_buffer: [64 * 1024]u8 = undefined;
 
-        const session_file = try cwd.createFile(io, session_bin, .{});
-        defer session_file.close(io);
-        var session_file_writer = session_file.writer(io, &session_buffer);
-        const session_writer = &session_file_writer.interface;
+            const cwd = Io.Dir.cwd();
+            const action_file = try cwd.createFile(io, action_bin, .{});
+            defer action_file.close(io);
+            var action_file_writer = action_file.writer(io, &action_buffer);
+            const action_writer = &action_file_writer.interface;
 
-        const create_file = try cwd.createFile(io, create_bin, .{});
-        defer create_file.close(io);
-        var create_file_writer = create_file.writer(io, &create_buffer);
-        const create_writer = &create_file_writer.interface;
+            const session_file = try cwd.createFile(io, session_bin, .{});
+            defer session_file.close(io);
+            var session_file_writer = session_file.writer(io, &session_buffer);
+            const session_writer = &session_file_writer.interface;
 
-        const prop_file = try cwd.createFile(io, prop_bin, .{});
-        defer prop_file.close(io);
-        var prop_file_writer = prop_file.writer(io, &propagation_buffer);
-        const prop_writer = &prop_file_writer.interface;
+            const create_file = try cwd.createFile(io, create_bin, .{});
+            defer create_file.close(io);
+            var create_file_writer = create_file.writer(io, &create_buffer);
+            const create_writer = &create_file_writer.interface;
 
-        const startTime = Io.Timestamp.now(io, .cpu_thread);
-        _ = try simulation.simulate(
-            gpa,
-            arena,
-            rng,
-            config,
-            topology,
-            &state,
-            action_writer,
-            session_writer,
-            create_writer,
-            prop_writer,
-        );
-        const elapsedTime = startTime.untilNow(io, .cpu_thread);
+            const prop_file = try cwd.createFile(io, prop_bin, .{});
+            defer prop_file.close(io);
+            var prop_file_writer = prop_file.writer(io, &propagation_buffer);
+            const prop_writer = &prop_file_writer.interface;
+
+            const startTime = Io.Timestamp.now(io, .cpu_thread);
+            _ = try simulation.simulate(
+                gpa,
+                arena,
+                rng,
+                config,
+                topology,
+                &state,
+                action_writer,
+                session_writer,
+                create_writer,
+                prop_writer,
+            );
+            elapsedTime = startTime.untilNow(io, .cpu_thread);
+
+            // JSONL conversion
+            var jsonl_buf: [std.fs.max_path_bytes]u8 = undefined;
+
+            const action_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/{d}-action_trace.jsonl", .{ run_dir, i });
+            try bytesToJsonl(io, entities.TraceAction, action_bin, action_jsonl);
+
+            const session_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/{d}-session_trace.jsonl", .{ run_dir, i });
+            try bytesToJsonl(io, entities.TraceSession, session_bin, session_jsonl);
+
+            const create_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/{d}-create_trace.jsonl", .{ run_dir, i });
+            try bytesToJsonl(io, entities.TraceCreate, create_bin, create_jsonl);
+
+            const prop_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/{d}-propagate_trace.jsonl", .{ run_dir, i });
+            try bytesToJsonl(io, entities.TracePropagation, prop_bin, prop_jsonl);
+        } else {
+            // just run the simulation
+            const startTime = Io.Timestamp.now(io, .cpu_thread);
+            _ = try simulation.simulate(
+                gpa,
+                arena,
+                rng,
+                config,
+                topology,
+                &state,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+            );
+            elapsedTime = startTime.untilNow(io, .cpu_thread);
+        }
 
         try mutex_times.lock(io);
         try times_w.print("{d} {d} {d}\n", .{ worker_id, run_idx, elapsedTime.toMilliseconds() });
         try times_w.flush();
         mutex_times.unlock(io);
-
-        // Convert binary traces to JSONL
-        // try stdout.writeAll("Converting traces into JSONL\n");
-        var jsonl_buf: [std.fs.max_path_bytes]u8 = undefined;
-
-        const action_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/{d}-action_trace.jsonl", .{ run_dir, i });
-        try bytesToJsonl(io, entities.TraceAction, action_bin, action_jsonl);
-
-        const session_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/{d}-session_trace.jsonl", .{ run_dir, i });
-        try bytesToJsonl(io, entities.TraceSession, session_bin, session_jsonl);
-
-        const create_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/{d}-create_trace.jsonl", .{ run_dir, i });
-        try bytesToJsonl(io, entities.TraceCreate, create_bin, create_jsonl);
-
-        const prop_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/{d}-propagate_trace.jsonl", .{ run_dir, i });
-        try bytesToJsonl(io, entities.TracePropagation, prop_bin, prop_jsonl);
 
         try stdout.print("[Batch {d} - {d}] - Execution time: {d} ms\n", .{ worker_id, run_idx, elapsedTime.toMilliseconds() });
         try stdout.flush();
@@ -340,8 +312,6 @@ fn simulationBatch(
     return;
 }
 
-/// this probably could be much more prettier if I passed the Io.Writer/Io.Reader by parameter, and I
-/// could even reuse the buffers... but dunno, at least this is ok :D
 fn bytesToJsonl(io: Io, comptime T: type, read_file: []const u8, write_file: []const u8) !void {
     const n = @sizeOf(T);
 
@@ -374,7 +344,7 @@ fn bytesToJsonl(io: Io, comptime T: type, read_file: []const u8, write_file: []c
         error.FileNotFound, error.AccessDenied => {
             std.debug.print("unable to open file: {}\n", .{err});
         },
-        else => |e| return e, // don't continue; rather, bomb out
+        else => |e| return e,
     }
 
     try writer.flush();

@@ -1,9 +1,12 @@
 const std = @import("std");
 
+const builtin = @import("build");
+const is_specific = std.mem.eql(u8, "specific", builtin.build);
+
 const Allocator = std.mem.Allocator;
 const Random = std.Random;
 
-const config = @import("config.zig");
+const config = if (is_specific) @import("config-specific.zig") else @import("config-generic.zig");
 const entities = @import("entities.zig");
 
 const SimResults = config.SimResults;
