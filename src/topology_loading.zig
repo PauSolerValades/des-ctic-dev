@@ -11,7 +11,10 @@ const DiscDist = dist.DiscreteDistribution;
 
 const Categorical = dist.Categorical;
 
-const structs = @import("config.zig");
+const builtin = @import("build");
+const is_specific = std.mem.eql(u8, "specific", builtin.build);
+
+const structs = if (is_specific) @import("config-specific.zig") else @import("config-generic.zig");
 const entities = @import("entities.zig");
 const Precision = structs.Precision;
 
@@ -108,5 +111,3 @@ pub const BinaryGraph = struct {
         gpa.free(self.user_ids);
     }
 };
-
-

@@ -5,7 +5,10 @@ const stats = @import("distributions");
 
 const Pareto = stats.Pareto;
 
-const config = @import("config.zig");
+const builtin = @import("build");
+const is_specific = std.mem.eql(u8, "specific", builtin.build);
+
+const config = if (is_specific) @import("config-specific.zig") else @import("config-generic.zig");
 
 const ds = @import("ds");
 
