@@ -24,9 +24,9 @@ pub const User = struct {
     is_online: bool = false,
     session_gen: u32 = 0,
 
-    session_duration: Pareto(f64),
-    inter_session_time: Pareto(f64),
-    inter_creation_time: Pareto(f64),
+    session_duration: Pareto(Precision),
+    inter_session_time: Pareto(Precision),
+    inter_creation_time: Pareto(Precision),
 
     num_posts: u32 = 0,
     session_start_time: f64 = 0.0,

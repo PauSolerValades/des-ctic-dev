@@ -34,14 +34,14 @@ pub const SimConfig = struct {
     user_policy: DiscDist(Precision, entities.Action), // probability of available actions of the user
     user_inter_action: ContDist(Precision), // time between a user two actions
     // to init posts
-    warmup_post_inter_creation: ContDist(f64), // time of the post created in the simulation
+    warmup_post_inter_creation: ContDist(Precision), // time of the post created in the simulation
     // delays on posts transmissions
-    propagation_delay: ContDist(f64), // time between an action over a post and showing up followers timeline
-    interaction_delay: ContDist(f64), // time between
+    propagation_delay: ContDist(Precision), // time between an action over a post and showing up followers timeline
+    interaction_delay: ContDist(Precision), // time between
     // session configuration
     offline_startup_ratio: Precision, // which proportion of the users start on vacation
 
-    creation_delay: ContDist(f64),
+    creation_delay: ContDist(Precision),
 
     // misc config
     trace_to_file: bool, // true is trace is written to a file. False not

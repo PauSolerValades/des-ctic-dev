@@ -169,7 +169,6 @@ pub fn initSessions(
     t_clock: f64,
     session_trace: *Io.Writer,
 ) !void {
-    const trace_to_file = if (is_specific) builtin.trace_to_file else simconf.trace_to_file;
     const unif: Unif = .init(0, 1, dist.Interval.cc);
 
     for (0..state.users.len) |uid| {
@@ -190,7 +189,7 @@ pub fn initSessions(
 
             // as user starts online, we log this into the session trace, it's both a generation and a processed event
             const s = TraceSession{ .time = t_clock, .type = .start, .user_id = @intCast(uid), .event_id = metrics.processed_events, .gen_id = metrics.generated_events, .backlog = 0 };
-            if (trace_to_file) {
+            if (simconf.trace_to_file) {
                 const bytes = std.mem.asBytes(&s);
                 try session_trace.writeAll(bytes);
             }
