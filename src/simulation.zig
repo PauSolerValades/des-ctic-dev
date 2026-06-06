@@ -204,7 +204,6 @@ pub fn initSessions(
 }
 
 pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const SimConfig, topology: *const Topology, state: *SimState, action_trace: *Io.Writer, session_trace: *Io.Writer, create_trace: *Io.Writer, propagate_trace: *Io.Writer) !SimResults {
-    const trace_to_file = if (is_specific) builtin.trace_to_file else simconf.trace_to_file;
     var t_clock: f64 = 0.0;
 
     var metrics = SimMetrics{};
@@ -265,7 +264,7 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
                 metrics.generated_events += 1;
 
                 const c = TraceCreate{ .time = t_clock, .user_id = current_uid, .post_id = new_post_id, .event_id = metrics.processed_events, .gen_id = gen_id };
-                if (trace_to_file) {
+                if (simconf.trace_to_file) {
                     const bytes = std.mem.asBytes(&c);
                     try create_trace.writeAll(bytes);
                 }
@@ -287,7 +286,7 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
 
                 const backlog: u32 = if (ssn == .end) @intCast(state.timelines[current_uid].items.len) else 0;
                 const s = TraceSession{ .time = t_clock, .type = ssn, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id, .backlog = backlog };
-                if (trace_to_file) {
+                if (simconf.trace_to_file) {
                     const bytes = std.mem.asBytes(&s);
                     try session_trace.writeAll(bytes);
                 }
@@ -353,7 +352,7 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
 
                     if (post_id) |pid| {
                         const a = TraceAction{ .time = t_clock, .type = act, .user_id = current_uid, .post_id = pid, .event_id = metrics.processed_events, .gen_id = gen_id };
-                        if (trace_to_file) {
+                        if (simconf.trace_to_file) {
                             const bytes = std.mem.asBytes(&a);
                             try action_trace.writeAll(bytes);
                         }
@@ -397,7 +396,7 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
                     state.users.items(.session_gen)[current_uid] += 1;
 
                     const s = TraceSession{ .time = t_clock, .type = .end, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id, .backlog = 0 };
-                    if (trace_to_file) {
+                    if (simconf.trace_to_file) {
                         const bytes = std.mem.asBytes(&s);
                         try session_trace.writeAll(bytes);
                     }
@@ -413,7 +412,7 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
             .propagate => |post_id| {
                 try propagatePost(gpa, topology, state, t_clock, current_uid, post_id);
                 const p = TracePropagation{ .time = t_clock, .type = post_id, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id };
-                if (trace_to_file) {
+                if (simconf.trace_to_file) {
                     const bytes = std.mem.asBytes(&p);
                     try propagate_trace.writeAll(bytes);
                 }
@@ -422,7 +421,7 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
         }
     }
 
-    if (trace_to_file) {
+    if (simconf.trace_to_file) {
         try action_trace.flush();
         try session_trace.flush();
         try create_trace.flush();
