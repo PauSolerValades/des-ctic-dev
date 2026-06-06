@@ -31,16 +31,16 @@ pub const SimConfig = struct {
     duration: f64, // Duration of the simulation
     warmup_time: f64, // time when warmup ends
     // user related actions
-    user_policy: Categorical(f64, entities.Action),
-    user_inter_action: Exponential(f64), // time between a user two actions
+    user_policy: Categorical(f32, entities.Action),
+    user_inter_action: Exponential(f32), // time between a user two actions
     // to init posts
-    warmup_post_inter_creation: Uniform(f64), // time of the post created in the simulation
+    warmup_post_inter_creation: Uniform(f32), // time of the post created in the simulation
     // delays on posts transmissions
-    propagation_delay: Constant(f64), // time between an action over a post and showing up followers timeline
-    interaction_delay: Constant(f64), // time between
+    propagation_delay: Constant(f32), // time between an action over a post and showing up followers timeline
+    interaction_delay: Constant(f32), // time between
     // session configuration
     offline_startup_ratio: Precision, // which proportion of the users start on vacation
-    creation_delay: Constant(f64),
+    creation_delay: Constant(f32),
     trace_to_file: bool,
     // misc config: baked in at compile time via the build system.
     // Access as SimConfig.trace_to_file (comptime in specific, field in generic).
@@ -51,13 +51,13 @@ pub const SimConfig = struct {
             .horizon = 6001,
             .duration = 5000,
             .warmup_time = 1000,
-            .user_policy = try Categorical(f64, entities.Action).init(gpa, &.{ 0.80, 0.188, 0.012 }, &.{ .ignore, .like, .repost }),
-            .user_inter_action = Exponential(f64).initMean(3.0),
-            .warmup_post_inter_creation = Uniform(f64).init(0.0, 1000.0, Interval.cc),
-            .propagation_delay = Constant(f64).init(1.0),
-            .interaction_delay = Constant(f64).init(1.0),
+            .user_policy = try .init(gpa, &.{ 0.80, 0.188, 0.012 }, &.{ .ignore, .like, .repost }),
+            .user_inter_action = .initMean(3.0),
+            .warmup_post_inter_creation = .init(0.0, 1000.0, Interval.cc),
+            .propagation_delay = .init(1.0),
+            .interaction_delay = .init(1.0),
             .offline_startup_ratio = 0.5,
-            .creation_delay = Constant(f64).init(1.0),
+            .creation_delay = .init(1.0),
             .trace_to_file = true,
         };
     }
