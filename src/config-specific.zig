@@ -31,16 +31,16 @@ pub const SimConfig = struct {
     duration: f64, // Duration of the simulation
     warmup_time: f64, // time when warmup ends
     // user related actions
-    user_policy: Categorical(f64, entities.Action),
-    user_inter_action: Exponential(f64), // time between a user two actions
+    user_policy: Categorical(Precision, entities.Action),
+    user_inter_action: Exponential(Precision), // time between a user two actions
     // to init posts
-    warmup_post_inter_creation: Uniform(f64), // time of the post created in the simulation
+    warmup_post_inter_creation: Uniform(Precision), // time of the post created in the simulation
     // delays on posts transmissions
-    propagation_delay: Constant(f64), // time between an action over a post and showing up followers timeline
-    interaction_delay: Constant(f64), // time between
+    propagation_delay: Constant(Precision), // time between an action over a post and showing up followers timeline
+    interaction_delay: Constant(Precision), // time between
     // session configuration
     offline_startup_ratio: Precision, // which proportion of the users start on vacation
-    creation_delay: Constant(f64),
+    creation_delay: Constant(Precision),
     trace_to_file: bool,
     // misc config: baked in at compile time via the build system.
     // Access as SimConfig.trace_to_file (comptime in specific, field in generic).
