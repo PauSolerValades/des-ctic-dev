@@ -16,7 +16,7 @@ const PagedBitSet = ds.PagedBitSet;
 const User = entities.User;
 const Post = entities.Post;
 
-fn fillPareto(io: std.Io, filename: []const u8, shape_buff: []f64, scale_buff: []f64) !void {
+fn fillPareto(io: std.Io, filename: []const u8, shape_buff: []f32, scale_buff: []f32) !void {
     var buf: [32 * 10000]u8 = undefined;
     const contents = try std.Io.Dir.readFile(std.Io.Dir.cwd(), io, filename, &buf);
     var tok = std.mem.tokenizeSequence(u8, contents, "\n");
@@ -27,8 +27,8 @@ fn fillPareto(io: std.Io, filename: []const u8, shape_buff: []f64, scale_buff: [
         const shape_str = values.next() orelse continue;
         const scale_str = values.next() orelse continue;
 
-        shape_buff[index] = try std.fmt.parseFloat(f64, shape_str);
-        scale_buff[index] = try std.fmt.parseFloat(f64, scale_str);
+        shape_buff[index] = try std.fmt.parseFloat(f32, shape_str);
+        scale_buff[index] = try std.fmt.parseFloat(f32, scale_str);
         index += 1;
     }
 }
@@ -126,16 +126,16 @@ pub const SimState = struct {
     /// every user in Size_monotonic.bin is in id order, that's perfect for us.
     fn wireUsers(io: Io, rng: Random, topology: *const Topology, users: *MultiArrayList(User)) !void {
         const sample_size = 10000;
-        var session_length_scale: [sample_size]f64 = undefined;
-        var session_length_shape: [sample_size]f64 = undefined;
+        var session_length_scale: [sample_size]f32 = undefined;
+        var session_length_shape: [sample_size]f32 = undefined;
         try fillPareto(io, "params/session_duration_params.txt", &session_length_shape, &session_length_scale);
 
-        var session_gap_scale: [sample_size]f64 = undefined;
-        var session_gap_shape: [sample_size]f64 = undefined;
+        var session_gap_scale: [sample_size]f32 = undefined;
+        var session_gap_shape: [sample_size]f32 = undefined;
         try fillPareto(io, "params/inter_session_params.txt", &session_gap_shape, &session_gap_scale);
 
-        var creation_scale: [sample_size]f64 = undefined;
-        var creation_shape: [sample_size]f64 = undefined;
+        var creation_scale: [sample_size]f32 = undefined;
+        var creation_shape: [sample_size]f32 = undefined;
         try fillPareto(io, "params/inter_creation_params.txt", &creation_shape, &creation_scale);
 
         // iterate over the user_ids. As they are monotonically increasing its fine
