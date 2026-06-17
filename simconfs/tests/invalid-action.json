@@ -4,12 +4,12 @@
   "duration": 5000,
   "warmup_time": 1000,
   "user_policy": {
-    "weights": [0.80, 0.188, 0.012 ],
-    "data": [ "ignore", "like", "repost" ]
+    "weights": [0.80, 0.188, 0.012],
+    "data": ["ignore", "like", "share"]
   },
   "user_inter_action": {
     "exponential": {
-      "mean": 3 
+      "mean": 3
     }
   },
   "warmup_post_inter_creation": {
@@ -24,7 +24,7 @@
       "value": 1
     }
   },
-  "interaction_delay": { 
+  "interaction_delay": {
     "constant": {
       "value": 1
     }

@@ -6,7 +6,7 @@ const MultiArrayList = std.MultiArrayList;
 const ArrayList = std.ArrayList;
 
 const entities = @import("entities.zig");
-const BinaryGraph = @import("topology_loading.zig").BinaryGraph;
+const BinaryGraph = @import("load-topology.zig").BinaryGraph;
 
 const ds = @import("ds");
 const Timeline = ds.DaryHeap(entities.TimelineEvent, 8, void, entities.compareTimelineEvent);

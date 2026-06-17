@@ -6,7 +6,7 @@ const argz = @import("eazy_args");
 
 const structs = @import("config.zig");
 const simulation = @import("simulation.zig");
-const loader = @import("topology_loading.zig");
+const loader = @import("load-topology.zig");
 const entities = @import("entities.zig");
 const topo = @import("topology.zig");
 
@@ -26,6 +26,7 @@ const def = .{
     .description = "Bskysim with the configuration struct known at compile time",
     .required = .{
         Arg([]const u8, "data", "Data file containing the network definition"),
+        Arg([]const u8, "config", "Input parameters"),
     },
     .options = .{
         Opt([]const u8, "output", "o", "./traces", "Dataset name for trace folder"),
@@ -62,8 +63,37 @@ pub fn main(init: std.process.Init) !void {
     var arena_json: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
     const data_alloc = arena_json.allocator();
 
-    const config = try SimConfig.calibrate(gpa);
-    defer config.deinit(gpa);
+    const len = args.config.len;
+    if (std.mem.eql(u8, args.config[len - 5 .. len - 1], ".json")) {
+        try stderr.print("The provided config file ({s}) does not have a 'json' extension\n", .{args.config});
+        std.process.exit(1);
+    }
+
+    //TODO: use a buffer as we know how long this is going to be
+    const content = Io.Dir.cwd().readFileAlloc(init.io, args.config, gpa, .unlimited) catch |err| {
+        switch (err) {
+            error.FileNotFound => try stderr.print("Config file {s} is not found.\n", .{args.config}),
+            error.IsDir => try stderr.print("{s} is a directory.\n", .{args.config}),
+            else => try stderr.print("Unexpected error: {}", .{err}),
+        }
+        std.process.exit(0);
+    };
+    defer gpa.free(content);
+
+    const config: SimConfig = SimConfig.create(gpa, content, stderr) catch |err| {
+        switch (err) {
+            error.OutOfMemory => try stderr.writeAll("Out of memory while parsing config.\n"),
+            error.WriteFailed => {}, // stderr already dead, nothing to do
+            error.InvalidCharacter => try stderr.writeAll("Invalid number in config file.\n"),
+            // JsonScannerError: JSON structure is malformed
+            error.UnexpectedToken, error.SyntaxError, error.UnexpectedEndOfInput, error.BufferUnderrun => try stderr.writeAll("Invalid JSON config file.\n"),
+            // ParseError: diagnostic already printed by the parser
+            error.UnknownDistribution, error.UnknownParameter, error.MissingField, error.InvalidInterval, error.InvalidField => {},
+        }
+        try stderr.flush();
+        std.process.exit(1);
+    };
+    defer config.delete(gpa);
 
     const startTimeLoadData = Io.Timestamp.now(init.io, .real);
     const sampled_topology = try loader.BinaryGraph.create(init.io, data_alloc, args.data);
@@ -82,6 +112,7 @@ pub fn main(init: std.process.Init) !void {
 
     var topology: Topology = try .create(arena, sampled_topology);
     defer topology.delete(arena);
+
     const elapsedTimeWireData = startTimeWireData.untilNow(init.io, .real);
 
     var samp_top_var = sampled_topology;
@@ -97,7 +128,7 @@ pub fn main(init: std.process.Init) !void {
     var traces_base_buf: [std.fs.max_path_bytes]u8 = undefined;
     const traces_base = try std.fmt.bufPrint(&traces_base_buf, "{s}", .{dataset_name});
     cwd.createDir(init.io, "traces", .default_dir) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
+        error.PathAlreadyExists => {}, // dw if the path already exists
         else => return err,
     };
     cwd.createDirPath(init.io, traces_base) catch |err| switch (err) {
@@ -347,4 +378,3 @@ fn bytesToJsonl(io: Io, comptime T: type, read_file: []const u8, write_file: []c
 
     try writer.flush();
 }
-

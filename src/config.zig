@@ -4,26 +4,55 @@ const Random = std.Random;
 const ArrayList = std.ArrayList;
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
-
-const stats = @import("distributions");
 const assert = std.debug.assert;
+const Scanner = std.json.Scanner;
+const Token = std.json.Token;
 
 const entities = @import("entities.zig");
 
+const stats = @import("distributions");
 const ContDist = stats.ContinuousDistribution;
 const DiscDist = stats.DiscreteDistribution;
-const Uniform = stats.Uniform;
 
 const Categorical = stats.Categorical;
-const Exponential = stats.Exponential;
-const Pareto = stats.Pareto;
-const Constant = stats.Constant;
-const Normal = stats.Normal;
-const Interval = stats.Interval;
 
 // accepts just f64 and f32 due to rng implementaiton
 pub const Precision = f32;
+pub const DataType = entities.Action;
 
+const parse = @import("dist-json-parse/parse.zig");
+const ParseError = parse.ParseError;
+const JsonScannerError = parse.JsonScannerError;
+const readKeyNumber = parse.readKeyNumber;
+const readKeyBool = parse.readKeyBool;
+
+const Field = blk: {
+    const fields = @typeInfo(SimConfig).@"struct".fields;
+    var names: [fields.len][]const u8 = undefined;
+    var vals: [fields.len]u8 = undefined;
+    for (fields, 0..) |f, i| {
+        names[i] = f.name;
+        vals[i] = i;
+    }
+    break :blk @Enum(u8, .exhaustive, &names, &vals);
+};
+
+var have: std.enums.EnumFieldStruct(Field, bool, false) = .{};
+
+/// Input parameters of the simulation.
+/// They are the following:
+/// - seed: control randomness
+/// - horizion: maximum timestamp of the simulation
+/// - duration: duration of the main simuation
+/// - warmup_time: timestamp where warmup ends
+/// - user_policy: Categorical with (repost, like, and ignore)
+/// - user_inter_action: time between two user actions
+/// - warmup_post_inter_creation: time between posts in the init of the simulation
+/// - propagation_delay: time that a post from being propagated into appear in another user timeline.
+/// - interaction_delay: time between a user initiating the action and actually performing the action
+/// - creation_delay: time between a user deciding to create the post and the actual post being created
+/// - offline_startup_ratio: which proportion of the users start in vacation
+/// - trace_to_file: should the simulation write the traces?
 pub const SimConfig = struct {
     seed: ?u64,
     // time marks
@@ -32,37 +61,100 @@ pub const SimConfig = struct {
     warmup_time: f64, // time when warmup ends
     // user related actions
     user_policy: Categorical(f32, entities.Action),
-    user_inter_action: Exponential(f32), // time between a user two actions
+    user_inter_action: ContDist(f32), // time between a user two actions
     // to init posts
-    warmup_post_inter_creation: Uniform(f32), // time of the post created in the simulation
+    warmup_post_inter_creation: ContDist(f32), // time of the post created in the simulation
     // delays on posts transmissions
-    propagation_delay: Constant(f32), // time between an action over a post and showing up followers timeline
-    interaction_delay: Constant(f32), // time between
+    propagation_delay: ContDist(f32), // time between an action over a post and showing up followers timeline
+    interaction_delay: ContDist(f32), // time between
+    creation_delay: ContDist(f32),
     // session configuration
     offline_startup_ratio: Precision, // which proportion of the users start on vacation
-    creation_delay: Constant(f32),
     trace_to_file: bool,
-    // misc config: baked in at compile time via the build system.
-    // Access as SimConfig.trace_to_file (comptime in specific, field in generic).
 
-    pub fn calibrate(gpa: Allocator) !SimConfig {
-        return SimConfig{
-            .seed = 42,
-            .horizon = 6001,
-            .duration = 5000,
-            .warmup_time = 1000,
-            .user_policy = try .init(gpa, &.{ 0.80, 0.188, 0.012 }, &.{ .ignore, .like, .repost }),
-            .user_inter_action = .initMean(3.0),
-            .warmup_post_inter_creation = .init(0.0, 1000.0, Interval.cc),
-            .propagation_delay = .init(1.0),
-            .interaction_delay = .init(1.0),
-            .offline_startup_ratio = 0.5,
-            .creation_delay = .init(1.0),
-            .trace_to_file = true,
-        };
+    /// Opens the json file and loads the distributions in memory
+    pub fn create(gpa: Allocator, content: []u8, stderr: *Io.Writer) (ParseError || JsonScannerError || error{ InvalidCharacter, WriteFailed })!SimConfig {
+        var scanner = Scanner.initCompleteInput(gpa, content);
+        defer scanner.deinit();
+
+        if (try scanner.next() != Token.object_begin) return error.UnexpectedToken;
+
+        var config: SimConfig = undefined;
+
+        while (true) {
+            const tok = try scanner.next();
+            if (tok == Token.object_end) break;
+            if (tok != Token.string) return error.UnexpectedToken;
+
+            const field = std.meta.stringToEnum(Field, tok.string) orelse {
+                try stderr.print("Parameter '{s}' is not an input parameter of the simulation", .{tok.string});
+                return error.UnknownParameter;
+            };
+
+            switch (field) {
+                .seed => {
+                    config.seed = @intFromFloat(try readKeyNumber(&scanner, f64));
+                    have.seed = true;
+                },
+                .horizon => {
+                    config.horizon = try readKeyNumber(&scanner, f64);
+                    have.horizon = true;
+                },
+                .duration => {
+                    config.duration = try readKeyNumber(&scanner, f64);
+                    have.duration = true;
+                },
+                .warmup_time => {
+                    config.warmup_time = try readKeyNumber(&scanner, f64);
+                    have.warmup_time = true;
+                },
+                .user_policy => {
+                    config.user_policy = try parse.parseUserPolicyCategorical(gpa, &scanner, stderr);
+                    have.user_policy = true;
+                },
+                .user_inter_action => {
+                    config.user_inter_action = try parse.parseContinuousDist(&scanner, stderr, "user_inter_action");
+                    have.user_inter_action = true;
+                },
+                .warmup_post_inter_creation => {
+                    config.warmup_post_inter_creation = try parse.parseContinuousDist(&scanner, stderr, "warmup_post_inter_creation");
+                    have.warmup_post_inter_creation = true;
+                },
+                .propagation_delay => {
+                    config.propagation_delay = try parse.parseContinuousDist(&scanner, stderr, "propagation_delay");
+                    have.propagation_delay = true;
+                },
+                .interaction_delay => {
+                    config.interaction_delay = try parse.parseContinuousDist(&scanner, stderr, "interaction_delay");
+                    have.interaction_delay = true;
+                },
+                .creation_delay => {
+                    config.creation_delay = try parse.parseContinuousDist(&scanner, stderr, "creation_delay");
+                    have.creation_delay = true;
+                },
+                .offline_startup_ratio => {
+                    config.offline_startup_ratio = try readKeyNumber(&scanner, Precision);
+                    have.offline_startup_ratio = true;
+                },
+                .trace_to_file => {
+                    config.trace_to_file = try readKeyBool(&scanner);
+                    have.trace_to_file = true;
+                },
+            }
+        }
+
+        // verify all fields were present
+        inline for (@typeInfo(Field).@"enum".fields) |f| {
+            if (!@field(have, f.name)) {
+                try stderr.print("missing field: '{s}'\n", .{f.name});
+            }
+        }
+        return config;
     }
 
-    pub fn deinit(self: *const SimConfig, gpa: Allocator) void {
+    pub fn delete(self: *const SimConfig, gpa: Allocator) void {
+        gpa.free(self.user_policy.weights);
+        gpa.free(self.user_policy.data);
         self.user_policy.deinit(gpa);
     }
 
