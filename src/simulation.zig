@@ -165,20 +165,23 @@ pub fn initSessions(
 ) !void {
     const unif: Unif = .init(0, 1, dist.Interval.cc);
 
+    const user_online = state.users.items(.is_online);
+    const user_session_start = state.users.items(.session_start_time);
+
     for (0..state.users.len) |uid| {
         // this is to avoid potential problems :)
         // graph.timelines[uid].clearRetainingCapacity();
 
         const r = unif.sample(rng);
         if (r < simconf.offline_startup_ratio) { // user starts offline
-            state.users.items(.is_online)[uid] = false;
+            user_online[uid] = false;
 
             const event_start = gen.eventSessionStart(rng, &state.users, t_clock, @intCast(uid), 0, metrics.generated_events);
             try queue.add(gpa, event_start);
             metrics.generated_events += 1;
         } else { // users starts online
-            state.users.items(.is_online)[uid] = true;
-            state.users.items(.session_start_time)[uid] = t_clock;
+            user_online[uid] = true;
+            user_session_start[uid] = t_clock;
             metrics.total_sessions += 1;
 
             // as user starts online, we log this into the session trace, it's both a generation and a processed event
@@ -226,6 +229,12 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
     }
 
     const t_end = @min(simconf.warmup_time + simconf.duration, simconf.horizon);
+
+    const user_session = state.users.items(.session_gen);
+    const user_online = state.users.items(.is_online);
+    const user_session_start = state.users.items(.session_start_time);
+    const user_num_posts = state.users.items(.num_posts);
+
     while (t_clock <= t_end and queue.items.len > 0) {
         const current_event = queue.remove();
         const current_uid: Index = current_event.user_id;
@@ -235,8 +244,8 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
 
         switch (current_event.type) {
             .create => {
-                const is_event_stale: bool = current_event.session_gen != state.users.items(.session_gen)[current_uid];
-                const is_user_online: bool = state.users.items(.is_online)[current_uid];
+                const is_event_stale: bool = current_event.session_gen != user_session[current_uid];
+                const is_user_online: bool = user_online[current_uid];
                 // Note: if an event is stale the user cannot be online. it's just a double check
                 if (is_event_stale or !is_user_online) {
                     metrics.dropped_events += 1;
@@ -244,7 +253,7 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
                 }
                 const new_post_id = metrics.post_count;
 
-                state.users.items(.num_posts)[current_uid] += 1;
+                user_num_posts[current_uid] += 1;
                 try state.user_seen_post.ensureItemCapacity(arena, new_post_id);
                 try state.user_interact_post.ensureItemCapacity(arena, new_post_id);
                 // creator has seen and implicitly interacted with their own post
@@ -261,15 +270,15 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
                 metrics.post_count += 1;
                 metrics.processed_events += 1;
 
-                const new_post = gen.eventCreatePost(rng, simconf, &state.users, t_clock, current_uid, state.users.items(.session_gen)[current_uid], metrics.generated_events);
+                const new_post = gen.eventCreatePost(rng, simconf, &state.users, t_clock, current_uid, user_session[current_uid], metrics.generated_events);
                 try queue.add(gpa, new_post);
                 metrics.generated_events += 1;
             },
 
             .session => |ssn| {
                 // a session can be stale due to the catch up mechanic.
-                const is_event_stale: bool = current_event.session_gen != state.users.items(.session_gen)[current_uid];
-                if (ssn == .end and (!state.users.items(.is_online)[current_uid] or is_event_stale)) {
+                const is_event_stale: bool = current_event.session_gen != user_session[current_uid];
+                if (ssn == .end and (!user_online[current_uid] or is_event_stale)) {
                     metrics.dropped_events += 1;
                     continue;
                 }
@@ -281,32 +290,32 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
 
                 switch (ssn) {
                     .start => {
-                        state.users.items(.is_online)[current_uid] = true;
-                        state.users.items(.session_gen)[current_uid] += 1;
+                        user_online[current_uid] = true;
+                        user_session[current_uid] += 1;
 
-                        state.users.items(.session_start_time)[current_uid] = t_clock; // Record start time
+                        user_session_start[current_uid] = t_clock; // Record start time
                         metrics.total_sessions += 1;
 
-                        const first_action = gen.eventAction(rng, simconf, t_clock, current_uid, state.users.items(.session_gen)[current_uid], metrics.generated_events);
+                        const first_action = gen.eventAction(rng, simconf, t_clock, current_uid, user_session[current_uid], metrics.generated_events);
                         try queue.add(gpa, first_action);
                         metrics.generated_events += 1;
 
-                        const new_post = gen.eventCreatePost(rng, simconf, &state.users, t_clock, current_uid, state.users.items(.session_gen)[current_uid], metrics.generated_events);
+                        const new_post = gen.eventCreatePost(rng, simconf, &state.users, t_clock, current_uid, user_session[current_uid], metrics.generated_events);
                         try queue.add(gpa, new_post);
                         metrics.generated_events += 1;
 
-                        const end_session = gen.eventSessionEnd(rng, &state.users, t_clock, current_uid, state.users.items(.session_gen)[current_uid], metrics.generated_events);
+                        const end_session = gen.eventSessionEnd(rng, &state.users, t_clock, current_uid, user_session[current_uid], metrics.generated_events);
                         try queue.add(gpa, end_session);
                         metrics.generated_events += 1;
                     },
                     .end => {
                         // schedule users wake up time
-                        state.users.items(.is_online)[current_uid] = false;
+                        user_online[current_uid] = false;
                         // metrics
-                        metrics.total_online_time += (t_clock - state.users.items(.session_start_time)[current_uid]);
+                        metrics.total_online_time += (t_clock - user_session_start[current_uid]);
                         metrics.max_duration_ends += 1;
 
-                        const start_session = gen.eventSessionStart(rng, &state.users, t_clock, current_uid, state.users.items(.session_gen)[current_uid], metrics.generated_events);
+                        const start_session = gen.eventSessionStart(rng, &state.users, t_clock, current_uid, user_session[current_uid], metrics.generated_events);
                         try queue.add(gpa, start_session);
                         metrics.generated_events += 1;
 
@@ -318,8 +327,8 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
             },
 
             .action => |act| {
-                const is_event_stale: bool = current_event.session_gen != state.users.items(.session_gen)[current_uid];
-                const is_user_online: bool = state.users.items(.is_online)[current_uid];
+                const is_event_stale: bool = current_event.session_gen != user_session[current_uid];
+                const is_user_online: bool = user_online[current_uid];
 
                 if (is_event_stale or !is_user_online) {
                     metrics.dropped_events += 1;
@@ -370,22 +379,22 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
                         }
                         metrics.processed_events += 1;
 
-                        const event = gen.eventAction(rng, simconf, t_clock, current_uid, state.users.items(.session_gen)[current_uid], metrics.generated_events);
+                        const event = gen.eventAction(rng, simconf, t_clock, current_uid, user_session[current_uid], metrics.generated_events);
                         try queue.add(gpa, event);
                         metrics.generated_events += 1;
                     }
                 } else {
-                    state.users.items(.is_online)[current_uid] = false;
+                    user_online[current_uid] = false;
 
-                    metrics.total_online_time += (t_clock - state.users.items(.session_start_time)[current_uid]);
+                    metrics.total_online_time += (t_clock - user_session_start[current_uid]);
                     metrics.empty_timeline_ends += 1;
-                    state.users.items(.session_gen)[current_uid] += 1;
+                    user_session[current_uid] += 1;
 
                     const s = TraceSession{ .time = t_clock, .type = .end, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id, .backlog = 0 };
                     const bytes = std.mem.asBytes(&s);
                     try session_trace.writeAll(bytes);
 
-                    const bored_start = gen.eventSessionStart(rng, &state.users, t_clock, current_uid, state.users.items(.session_gen)[current_uid], metrics.generated_events);
+                    const bored_start = gen.eventSessionStart(rng, &state.users, t_clock, current_uid, user_session[current_uid], metrics.generated_events);
                     try queue.add(gpa, bored_start);
                     metrics.generated_events += 1;
                     metrics.processed_events += 1;
