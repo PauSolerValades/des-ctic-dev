@@ -81,7 +81,8 @@ fn propagatePost(gpa: Allocator, topology: *const Topology, state: *SimState, t_
         // Skip if follower already interacted with this post (liked/reposted).
         // This avoids useless heap insertions for posts that would be skipped later.
         if (state.user_interact_post.isSet(fid, post_id)) continue;
-        try state.timelines[fid].add(gpa, tl_event);
+        // this is the backlog, propagation is not in the active timeline 
+        try state.timelines[fid].getBackground().add(gpa, tl_event);
     }
 }
 
@@ -211,6 +212,12 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
     try stageOne(gpa, arena, rng, simconf, topology, state, &queue, &metrics, &t_clock, create_trace, propagate_trace);
     // queue.clearRetainingCapacity();
 
+    // Warmup propagated all posts into getBackground(). Swap so they're
+    // immediately visible when the real simulation starts.
+    for (0..state.users.len) |uid| {
+        state.timelines[uid].switchTl();
+    }
+
     // decide which users start online or not
     try initSessions(gpa, rng, simconf, state, &queue, &metrics, t_clock, session_trace);
 
@@ -221,10 +228,6 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
             const first_action = gen.eventAction(rng, simconf, t_clock, @intCast(uid), 0, metrics.generated_events);
             try queue.add(gpa, first_action);
             metrics.generated_events += 1;
-
-            // const new_post = eventCreatePost(rng, simconf, t_clock, @intCast(uid), 0, graph.users.items(.session_gen)[uid], metrics.generated_events);
-            // try queue.add(gpa, new_post);
-            // metrics.generated_events += 1;
         }
     }
 
@@ -283,7 +286,9 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
                     continue;
                 }
 
-                const backlog: u32 = if (ssn == .end) @intCast(state.timelines[current_uid].items.len) else 0;
+                const user_timeline = state.timelines[current_uid].getActive();
+                const background_timeline = state.timelines[current_uid].getBackground();
+                const backlog: u32 = if (ssn == .end) @intCast(background_timeline.items.len) else 0;
                 const s = TraceSession{ .time = t_clock, .type = ssn, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id, .backlog = backlog };
                 const bytes = std.mem.asBytes(&s);
                 try session_trace.writeAll(bytes);
@@ -295,6 +300,9 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
 
                         user_session_start[current_uid] = t_clock; // Record start time
                         metrics.total_sessions += 1;
+
+                        // swap to bring backlog (posts accumulated during offline + previous session) to the front
+                        state.timelines[current_uid].switchTl();
 
                         const first_action = gen.eventAction(rng, simconf, t_clock, current_uid, user_session[current_uid], metrics.generated_events);
                         try queue.add(gpa, first_action);
@@ -319,8 +327,10 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
                         try queue.add(gpa, start_session);
                         metrics.generated_events += 1;
 
-                        // post non seen when session finished will get nuked
-                        state.timelines[current_uid].clearRetainingCapacity();
+                        // clear the active timeline (posts the user finished consuming).
+                        // the background timeline is preserved — it holds posts that arrived
+                        // during the session but weren't swapped in yet.
+                        user_timeline.clearRetainingCapacity();
                     },
                 }
                 metrics.processed_events += 1; // both .end and .start do not skip the loop, so its okay to put it here:
@@ -335,12 +345,14 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
                     continue;
                 }
 
-                if (state.timelines[current_uid].items.len != 0) {
+                const user_timeline = state.timelines[current_uid].getActive();
+                
+                if (user_timeline.items.len != 0) {
                     // Drain already-interacted posts inline to avoid bouncing
                     // through the global event queue for each skipped post.
                     var post_id: ?Index = null;
-                    while (state.timelines[current_uid].items.len != 0) {
-                        const p = state.timelines[current_uid].remove();
+                    while (user_timeline.items.len != 0) {
+                        const p = user_timeline.remove();
                         if (!state.user_interact_post.isSet(current_uid, p.post_id)) {
                             post_id = p.post_id;
                             break;
@@ -378,27 +390,39 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
                             },
                         }
                         metrics.processed_events += 1;
+                    }
 
-                        const event = gen.eventAction(rng, simconf, t_clock, current_uid, user_session[current_uid], metrics.generated_events);
-                        try queue.add(gpa, event);
+                    const event = gen.eventAction(rng, simconf, t_clock, current_uid, user_session[current_uid], metrics.generated_events);
+                    try queue.add(gpa, event);
+                    metrics.generated_events += 1;
+                } else {
+
+                    const background_timeline = state.timelines[current_uid].getBackground(); 
+
+                    if (background_timeline.items.len == 0) {
+                        // Boredom mechanic
+                        user_online[current_uid] = false;
+
+                        metrics.total_online_time += (t_clock - user_session_start[current_uid]);
+                        metrics.empty_timeline_ends += 1;
+                        user_session[current_uid] += 1;
+
+                        const s = TraceSession{ .time = t_clock, .type = .end, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id, .backlog = 0 };
+                        const bytes = std.mem.asBytes(&s);
+                        try session_trace.writeAll(bytes);
+
+                        const bored_start = gen.eventSessionStart(rng, &state.users, t_clock, current_uid, user_session[current_uid], metrics.generated_events);
+                        try queue.add(gpa, bored_start);
+                        metrics.generated_events += 1;
+                        metrics.processed_events += 1;
+                    } else {
+                        // switch the timelines add a new event action which will be from the other timeline
+                        state.timelines[current_uid].switchTl(); 
+
+                        const action = gen.eventAction(rng, simconf, t_clock, current_uid, user_session[current_uid], metrics.generated_events);
+                        try queue.add(gpa, action);
                         metrics.generated_events += 1;
                     }
-                } else {
-                    user_online[current_uid] = false;
-
-                    metrics.total_online_time += (t_clock - user_session_start[current_uid]);
-                    metrics.empty_timeline_ends += 1;
-                    user_session[current_uid] += 1;
-
-                    const s = TraceSession{ .time = t_clock, .type = .end, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id, .backlog = 0 };
-                    const bytes = std.mem.asBytes(&s);
-                    try session_trace.writeAll(bytes);
-
-                    const bored_start = gen.eventSessionStart(rng, &state.users, t_clock, current_uid, user_session[current_uid], metrics.generated_events);
-                    try queue.add(gpa, bored_start);
-                    metrics.generated_events += 1;
-                    metrics.processed_events += 1;
-                    // no need to nuke the timeline, it's already empty
                 }
             },
 
@@ -417,18 +441,20 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
     try create_trace.flush();
     try propagate_trace.flush();
 
+    var total_active_backlog: usize = 0;
     var total_backlog: usize = 0;
     for (state.timelines) |*timeline| {
-        const v = timeline.items.len;
-        total_backlog += v;
+        total_active_backlog += timeline.getActive().items.len;
+        total_backlog += timeline.getActive().items.len + timeline.getBackground().items.len;
     }
 
-    const mean: f64 = @as(f64, @floatFromInt(total_backlog)) / @as(f64, @floatFromInt(state.users.len));
+    const mean_active: f64 = @as(f64, @floatFromInt(total_active_backlog)) / @as(f64, @floatFromInt(state.users.len));
+    const mean_total: f64 = @as(f64, @floatFromInt(total_backlog)) / @as(f64, @floatFromInt(state.users.len));
 
     var sum_sq_diff: f64 = 0.0;
     for (state.timelines) |*timeline| {
-        const v: f64 = @floatFromInt(timeline.items.len);
-        const diff = v - mean;
+        const v: f64 = @floatFromInt(timeline.getActive().items.len + timeline.getBackground().items.len);
+        const diff = v - mean_total;
         sum_sq_diff += diff * diff;
     }
 
@@ -450,7 +476,9 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
         .total_impressions = metrics.impressions,
         .avg_impressions_per_user = @as(f64, @floatFromInt(metrics.impressions)) / @as(f64, @floatFromInt(state.users.len)),
         .engagement_rate = @as(f64, @floatFromInt(interactions)) / @as(f64, @floatFromInt(metrics.impressions)),
-        .avg_backlog = mean,
+        .avg_backlog = mean_total,
+        .avg_active_backlog = mean_active,
+        .total_boredom_ends = metrics.empty_timeline_ends,
         .variance_backlog = backlog_variance,
         .ci_backlog = margin_error,
         .total_sessions = metrics.total_sessions,

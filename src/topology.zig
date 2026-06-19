@@ -9,7 +9,7 @@ const entities = @import("entities.zig");
 const BinaryGraph = @import("load-topology.zig").BinaryGraph;
 
 const ds = @import("ds");
-const Timeline = ds.DaryHeap(entities.TimelineEvent, 8, void, entities.compareTimelineEvent);
+const UserTimeline = entities.UserTimeline;
 const SMAList = ds.SegmentedMultiArrayList;
 const PagedBitSet = ds.PagedBitSet;
 
@@ -94,7 +94,7 @@ pub const Topology = struct {
 
 pub const SimState = struct {
     users: MultiArrayList(User),
-    timelines: []Timeline,
+    timelines: []UserTimeline,
     posts: SMAList(Post, 16),
     user_seen_post: PagedBitSet(16),
     user_interact_post: PagedBitSet(16),
@@ -103,11 +103,10 @@ pub const SimState = struct {
         var users: std.MultiArrayList(User) = try .initCapacity(arena, topology.nodes);
         try wireUsers(io, rng, topology, &users);
 
-        var timelines: []Timeline = try gpa.alloc(Timeline, users.len);
+        var timelines: []UserTimeline = try gpa.alloc(UserTimeline, users.len);
 
         for (0..timelines.len) |i| {
-            timelines[i] = .empty;
-            try timelines[i].ensureTotalCapacity(gpa, 1024);
+            timelines[i] = try .create(gpa, 1024);
         }
 
         const posts: SMAList(Post, 16) = .empty;
@@ -166,7 +165,7 @@ pub const SimState = struct {
         self.users.deinit(arena);
 
         for (self.timelines) |timeline| {
-            timeline.deinit(gpa);
+            timeline.delete(gpa);
         }
         gpa.free(self.timelines);
 
@@ -181,6 +180,7 @@ pub const SimState = struct {
             self.users.items(.session_gen)[i] = 0;
             self.users.items(.num_posts)[i] = 0;
             self.users.items(.session_start_time)[i] = 0.0;
+            self.timelines[i].active = .a;
         }
 
         self.posts.clearRetainingCapacity();

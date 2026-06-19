@@ -94,6 +94,7 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     };
     defer config.delete(gpa);
+    try stderr.flush(); // if a warning happens
 
     const startTimeLoadData = Io.Timestamp.now(init.io, .real);
     const sampled_topology = try loader.BinaryGraph.create(init.io, data_alloc, args.data);
@@ -281,7 +282,7 @@ fn simulationBatch(
             const prop_writer = &prop_file_writer.interface;
 
             const startTime = Io.Timestamp.now(io, .cpu_thread);
-            _ = try simulation.simulate(
+            const result = try simulation.simulate(
                 gpa,
                 arena,
                 rng,
@@ -294,6 +295,9 @@ fn simulationBatch(
                 prop_writer,
             );
             elapsedTime = startTime.untilNow(io, .cpu_thread);
+
+            try stdout.print("{f}\n", .{result});
+            try stdout.flush();
 
             // JSONL conversion
             var jsonl_buf: [std.fs.max_path_bytes]u8 = undefined;

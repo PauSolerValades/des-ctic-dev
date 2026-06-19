@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const Allocator = std.mem.Allocator;
+
 const Heap = @import("ds").Heap;
 const stats = @import("distributions");
 
@@ -28,6 +30,7 @@ pub const User = struct {
     num_posts: u32 = 0,
     session_start_time: f64 = 0.0,
 };
+
 
 /// Post of the simulation
 pub const Post = struct {
@@ -85,6 +88,56 @@ pub fn compareTimelineEvent(context: void, a: TimelineEvent, b: TimelineEvent) O
     _ = context;
     return std.math.order(b.time, a.time);
 }
+
+const Timeline = ds.DaryHeap(TimelineEvent, 8, void, compareTimelineEvent);
+
+pub const WhichTimeline = enum {a, b};
+pub const UserTimeline = struct {
+    a: Timeline,
+    b: Timeline,
+    active: WhichTimeline,
+
+    pub fn getActive(self: *@This()) *Timeline {
+        return switch (self.active) {
+            .a => &self.a,
+            .b => &self.b,
+        }; 
+    }
+
+    pub fn getBackground(self: *@This()) *Timeline {
+        return switch (self.active) {
+            .a => &self.b,
+            .b => &self.a,
+        };
+    }
+
+    pub fn switchTl(self: *@This()) void {
+        switch (self.active) {
+            .a => self.active = .b,
+            .b => self.active = .a,
+        }
+    }
+
+    pub fn create(gpa: Allocator, capacity: usize) !@This() {
+        
+        var a: Timeline = .empty;
+        var b: Timeline = .empty;
+
+        try a.ensureTotalCapacity(gpa, capacity);
+        try b.ensureTotalCapacity(gpa, capacity);
+        
+        return UserTimeline{
+            .a = a,
+            .b = b,
+            .active = .a,
+        };
+    }
+    
+    pub fn delete(self: @This(), gpa: Allocator) void {
+        self.a.deinit(gpa);
+        self.b.deinit(gpa);
+    }
+};
 
 /// Auxiliar struct for trace writing. Contains all
 /// the entities that need to be written on the trace
