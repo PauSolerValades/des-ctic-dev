@@ -181,6 +181,8 @@ pub const SimState = struct {
             self.users.items(.num_posts)[i] = 0;
             self.users.items(.session_start_time)[i] = 0.0;
             self.timelines[i].active = .a;
+            self.timelines[i].a.clearRetainingCapacity();
+            self.timelines[i].b.clearRetainingCapacity();
         }
 
         self.posts.clearRetainingCapacity();
