@@ -36,6 +36,8 @@ const TraceAction = entities.TraceAction;
 const TraceSession = entities.TraceSession;
 const TraceCreate = entities.TraceCreate;
 const TracePropagation = entities.TracePropagation;
+const TraceWriters = entities.TraceWriters;
+const SimError = entities.SimError;
 
 const TimelineEvent = entities.TimelineEvent;
 const compareTimelineEvent = entities.compareTimelineEvent;
@@ -63,7 +65,7 @@ pub const SimMetrics = struct {
 
 const Unif = dist.Uniform(Precision);
 
-fn propagatePost(gpa: Allocator, topology: *const Topology, state: *SimState, t_clock: f64, user_id: u32, post_id: Index) !void {
+fn propagatePost(gpa: Allocator, topology: *const Topology, state: *SimState, t_clock: f64, user_id: u32, post_id: Index) SimError!void {
     const start_idx = topology.start[user_id];
     const end_idx = if (user_id + 1 < state.users.len)
         topology.start[user_id + 1]
@@ -81,8 +83,8 @@ fn propagatePost(gpa: Allocator, topology: *const Topology, state: *SimState, t_
         // Skip if follower already interacted with this post (liked/reposted).
         // This avoids useless heap insertions for posts that would be skipped later.
         if (state.user_interact_post.isSet(fid, post_id)) continue;
-        // this is the backlog, propagation is not in the active timeline 
-        try state.timelines[fid].getBackground().add(gpa, tl_event);
+        // this is the backlog, propagation is not in the active timeline
+        state.timelines[fid].getBackground().add(gpa, tl_event) catch return error.OutOfMemoryTimeline;
     }
 }
 
@@ -96,17 +98,16 @@ fn stageOne(
     queue: *EventQueue,
     metrics: *SimMetrics,
     t_clock: *f64,
-    create_trace: *Io.Writer,
-    propagate_trace: *Io.Writer,
-) !void {
+    traces: TraceWriters,
+) SimError!void {
 
     // We create an event per user to kickstart the user posts.
-    try state.user_seen_post.ensureItemCapacity(arena, state.users.len);
-    try state.user_interact_post.ensureItemCapacity(arena, state.users.len);
+    state.user_seen_post.ensureItemCapacity(arena, state.users.len) catch return error.OutOfMemoryPagedBitSet;
+    state.user_interact_post.ensureItemCapacity(arena, state.users.len) catch return error.OutOfMemoryPagedBitSet;
     for (0..state.users.len) |uid| {
         // we create a creation event
         const create_post = gen.eventCreateWarmup(rng, simconf, @intCast(uid), metrics.generated_events);
-        try queue.add(gpa, create_post);
+        queue.add(gpa, create_post) catch return error.OutOfMemoryQueue;
         metrics.generated_events += 1;
     }
 
@@ -121,32 +122,32 @@ fn stageOne(
             .create => {
                 const new_post_id = metrics.post_count;
 
-                try state.posts.append(arena, .{ .id = new_post_id, .author = current_uid });
-                try state.user_seen_post.ensureItemCapacity(arena, new_post_id);
-                try state.user_interact_post.ensureItemCapacity(arena, new_post_id);
+                state.posts.append(arena, .{ .id = new_post_id, .author = current_uid }) catch return error.OutOfMemorySMAList;
+                state.user_seen_post.ensureItemCapacity(arena, new_post_id) catch return error.OutOfMemoryPagedBitSet;
+                state.user_interact_post.ensureItemCapacity(arena, new_post_id) catch return error.OutOfMemoryPagedBitSet;
                 // creator has seen and implicitly interacted with their own post
                 state.user_seen_post.set(current_uid, new_post_id);
                 state.user_interact_post.set(current_uid, new_post_id);
 
                 const propagate = gen.eventPropagate(rng, simconf, t_clock.*, current_uid, new_post_id, metrics.generated_events);
-                try queue.add(gpa, propagate);
+                queue.add(gpa, propagate) catch return error.OutOfMemoryQueue;
                 metrics.generated_events += 1;
 
                 const c = TraceCreate{ .time = t_clock.*, .user_id = current_uid, .post_id = metrics.post_count, .event_id = metrics.processed_events, .gen_id = gen_id };
                 const bytes = std.mem.asBytes(&c);
-                try create_trace.writeAll(bytes);
+                try traces.create.writeAll(bytes);
 
                 metrics.post_count += 1;
 
                 const new_post = gen.eventCreatePost(rng, simconf, &state.users, t_clock.*, current_uid, state.users.items(.session_gen)[current_uid], metrics.generated_events);
-                try queue.add(gpa, new_post);
+                queue.add(gpa, new_post) catch return error.OutOfMemoryQueue;
                 metrics.generated_events += 1;
             },
             .propagate => |post_id| {
                 try propagatePost(gpa, topology, state, t_clock.*, current_uid, post_id);
                 const p = TracePropagation{ .time = t_clock.*, .type = post_id, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id };
                 const bytes = std.mem.asBytes(&p);
-                try propagate_trace.writeAll(bytes);
+                try traces.propagate.writeAll(bytes);
             },
             else => unreachable,
         }
@@ -162,8 +163,8 @@ pub fn initSessions(
     queue: *EventQueue,
     metrics: *SimMetrics,
     t_clock: f64,
-    session_trace: *Io.Writer,
-) !void {
+    traces: TraceWriters,
+) SimError!void {
     const unif: Unif = .init(0, 1, dist.Interval.cc);
 
     const user_online = state.users.items(.is_online);
@@ -178,7 +179,7 @@ pub fn initSessions(
             user_online[uid] = false;
 
             const event_start = gen.eventSessionStart(rng, &state.users, t_clock, @intCast(uid), 0, metrics.generated_events);
-            try queue.add(gpa, event_start);
+            queue.add(gpa, event_start) catch return error.OutOfMemoryQueue;
             metrics.generated_events += 1;
         } else { // users starts online
             user_online[uid] = true;
@@ -188,28 +189,36 @@ pub fn initSessions(
             // as user starts online, we log this into the session trace, it's both a generation and a processed event
             const s = TraceSession{ .time = t_clock, .type = .start, .user_id = @intCast(uid), .event_id = metrics.processed_events, .gen_id = metrics.generated_events, .backlog = 0 };
             const bytes = std.mem.asBytes(&s);
-            try session_trace.writeAll(bytes);
+            try traces.session.writeAll(bytes);
             metrics.*.generated_events += 1;
             metrics.*.processed_events += 1;
 
             const event_end = gen.eventSessionEnd(rng, &state.users, t_clock, @intCast(uid), 0, metrics.generated_events);
-            try queue.add(gpa, event_end);
+            queue.add(gpa, event_end) catch return error.OutOfMemoryQueue;
             metrics.*.generated_events += 1;
         }
     }
 }
 
-pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const SimConfig, topology: *const Topology, state: *SimState, action_trace: *Io.Writer, session_trace: *Io.Writer, create_trace: *Io.Writer, propagate_trace: *Io.Writer) !SimResults {
+pub fn simulate(
+    gpa: Allocator,
+    arena: Allocator,
+    rng: Random,
+    simconf: *const SimConfig,
+    topology: *const Topology,
+    state: *SimState,
+    traces: TraceWriters,
+) SimError!SimResults {
     var t_clock: f64 = 0.0;
 
     var metrics = SimMetrics{};
 
     var queue: EventQueue = .empty;
-    try queue.ensureTotalCapacity(gpa, 4 * topology.csr.len);
+    queue.ensureTotalCapacity(gpa, 4 * topology.csr.len) catch return error.OutOfMemoryQueue;
     defer queue.deinit(gpa);
 
     // Pgraphost generation on init
-    try stageOne(gpa, arena, rng, simconf, topology, state, &queue, &metrics, &t_clock, create_trace, propagate_trace);
+    try stageOne(gpa, arena, rng, simconf, topology, state, &queue, &metrics, &t_clock, traces);
     // queue.clearRetainingCapacity();
 
     // Warmup propagated all posts into getBackground(). Swap so they're
@@ -219,14 +228,14 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
     }
 
     // decide which users start online or not
-    try initSessions(gpa, rng, simconf, state, &queue, &metrics, t_clock, session_trace);
+    try initSessions(gpa, rng, simconf, state, &queue, &metrics, t_clock, traces);
 
     // combine this with the initSessions, it's dumb to iterate twice xd
     // set online users first action
     for (0..state.users.len) |uid| {
         if (state.users.items(.is_online)[uid]) {
             const first_action = gen.eventAction(rng, simconf, t_clock, @intCast(uid), 0, metrics.generated_events);
-            try queue.add(gpa, first_action);
+            queue.add(gpa, first_action) catch return error.OutOfMemoryQueue;
             metrics.generated_events += 1;
         }
     }
@@ -257,24 +266,24 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
                 const new_post_id = metrics.post_count;
 
                 user_num_posts[current_uid] += 1;
-                try state.user_seen_post.ensureItemCapacity(arena, new_post_id);
-                try state.user_interact_post.ensureItemCapacity(arena, new_post_id);
+                state.user_seen_post.ensureItemCapacity(arena, new_post_id) catch return error.OutOfMemoryPagedBitSet;
+                state.user_interact_post.ensureItemCapacity(arena, new_post_id) catch return error.OutOfMemoryPagedBitSet;
                 // creator has seen and implicitly interacted with their own post
                 state.user_seen_post.set(current_uid, new_post_id);
                 state.user_interact_post.set(current_uid, new_post_id);
 
                 const propagate = gen.eventPropagate(rng, simconf, t_clock, current_uid, new_post_id, metrics.generated_events);
-                try queue.add(gpa, propagate);
+                queue.add(gpa, propagate) catch return error.OutOfMemoryQueue;
                 metrics.generated_events += 1;
 
                 const c = TraceCreate{ .time = t_clock, .user_id = current_uid, .post_id = new_post_id, .event_id = metrics.processed_events, .gen_id = gen_id };
                 const bytes = std.mem.asBytes(&c);
-                try create_trace.writeAll(bytes);
+                try traces.create.writeAll(bytes);
                 metrics.post_count += 1;
                 metrics.processed_events += 1;
 
                 const new_post = gen.eventCreatePost(rng, simconf, &state.users, t_clock, current_uid, user_session[current_uid], metrics.generated_events);
-                try queue.add(gpa, new_post);
+                queue.add(gpa, new_post) catch return error.OutOfMemoryQueue;
                 metrics.generated_events += 1;
             },
 
@@ -291,7 +300,7 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
                 const backlog: u32 = if (ssn == .end) @intCast(background_timeline.items.len) else 0;
                 const s = TraceSession{ .time = t_clock, .type = ssn, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id, .backlog = backlog };
                 const bytes = std.mem.asBytes(&s);
-                try session_trace.writeAll(bytes);
+                try traces.session.writeAll(bytes);
 
                 switch (ssn) {
                     .start => {
@@ -305,15 +314,15 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
                         state.timelines[current_uid].switchTl();
 
                         const first_action = gen.eventAction(rng, simconf, t_clock, current_uid, user_session[current_uid], metrics.generated_events);
-                        try queue.add(gpa, first_action);
+                        queue.add(gpa, first_action) catch return error.OutOfMemoryQueue;
                         metrics.generated_events += 1;
 
                         const new_post = gen.eventCreatePost(rng, simconf, &state.users, t_clock, current_uid, user_session[current_uid], metrics.generated_events);
-                        try queue.add(gpa, new_post);
+                        queue.add(gpa, new_post) catch return error.OutOfMemoryQueue;
                         metrics.generated_events += 1;
 
                         const end_session = gen.eventSessionEnd(rng, &state.users, t_clock, current_uid, user_session[current_uid], metrics.generated_events);
-                        try queue.add(gpa, end_session);
+                        queue.add(gpa, end_session) catch return error.OutOfMemoryQueue;
                         metrics.generated_events += 1;
                     },
                     .end => {
@@ -324,7 +333,7 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
                         metrics.max_duration_ends += 1;
 
                         const start_session = gen.eventSessionStart(rng, &state.users, t_clock, current_uid, user_session[current_uid], metrics.generated_events);
-                        try queue.add(gpa, start_session);
+                        queue.add(gpa, start_session) catch return error.OutOfMemoryQueue;
                         metrics.generated_events += 1;
 
                         // clear the active timeline (posts the user finished consuming).
@@ -346,7 +355,7 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
                 }
 
                 const user_timeline = state.timelines[current_uid].getActive();
-                
+
                 if (user_timeline.items.len != 0) {
                     // Drain already-interacted posts inline to avoid bouncing
                     // through the global event queue for each skipped post.
@@ -362,7 +371,7 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
                     if (post_id) |pid| {
                         const a = TraceAction{ .time = t_clock, .type = act, .user_id = current_uid, .post_id = pid, .event_id = metrics.processed_events, .gen_id = gen_id };
                         const bytes = std.mem.asBytes(&a);
-                        try action_trace.writeAll(bytes);
+                        try traces.action.writeAll(bytes);
 
                         // Always mark as seen (diagnostic: counts every exposure)
                         state.user_seen_post.set(current_uid, pid);
@@ -374,7 +383,7 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
                                 state.user_interact_post.set(current_uid, pid);
 
                                 const propagate = gen.eventPropagate(rng, simconf, t_clock, current_uid, pid, metrics.generated_events);
-                                try queue.add(gpa, propagate);
+                                queue.add(gpa, propagate) catch return error.OutOfMemoryQueue;
                                 metrics.generated_events += 1;
                                 metrics.reposts += 1;
                             },
@@ -393,11 +402,10 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
                     }
 
                     const event = gen.eventAction(rng, simconf, t_clock, current_uid, user_session[current_uid], metrics.generated_events);
-                    try queue.add(gpa, event);
+                    queue.add(gpa, event) catch return error.OutOfMemoryQueue;
                     metrics.generated_events += 1;
                 } else {
-
-                    const background_timeline = state.timelines[current_uid].getBackground(); 
+                    const background_timeline = state.timelines[current_uid].getBackground();
 
                     if (background_timeline.items.len == 0) {
                         // Boredom mechanic
@@ -409,18 +417,18 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
 
                         const s = TraceSession{ .time = t_clock, .type = .end, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id, .backlog = 0 };
                         const bytes = std.mem.asBytes(&s);
-                        try session_trace.writeAll(bytes);
+                        try traces.session.writeAll(bytes);
 
                         const bored_start = gen.eventSessionStart(rng, &state.users, t_clock, current_uid, user_session[current_uid], metrics.generated_events);
-                        try queue.add(gpa, bored_start);
+                        queue.add(gpa, bored_start) catch return error.OutOfMemoryQueue;
                         metrics.generated_events += 1;
                         metrics.processed_events += 1;
                     } else {
                         // switch the timelines add a new event action which will be from the other timeline
-                        state.timelines[current_uid].switchTl(); 
+                        state.timelines[current_uid].switchTl();
 
                         const action = gen.eventAction(rng, simconf, t_clock, current_uid, user_session[current_uid], metrics.generated_events);
-                        try queue.add(gpa, action);
+                        queue.add(gpa, action) catch return error.OutOfMemoryQueue;
                         metrics.generated_events += 1;
                     }
                 }
@@ -430,16 +438,16 @@ pub fn simulate(gpa: Allocator, arena: Allocator, rng: Random, simconf: *const S
                 try propagatePost(gpa, topology, state, t_clock, current_uid, post_id);
                 const p = TracePropagation{ .time = t_clock, .type = post_id, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id };
                 const bytes = std.mem.asBytes(&p);
-                try propagate_trace.writeAll(bytes);
+                try traces.propagate.writeAll(bytes);
                 metrics.processed_events += 1;
             },
         }
     }
 
-    try action_trace.flush();
-    try session_trace.flush();
-    try create_trace.flush();
-    try propagate_trace.flush();
+    try traces.action.flush();
+    try traces.session.flush();
+    try traces.create.flush();
+    try traces.propagate.flush();
 
     var total_active_backlog: usize = 0;
     var total_backlog: usize = 0;

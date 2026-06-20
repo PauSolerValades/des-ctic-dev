@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 
 const Heap = @import("ds").Heap;
 const stats = @import("distributions");
@@ -173,4 +174,23 @@ pub const TracePropagation = struct {
     gen_id: u64,
     user_id: Index,
     type: Index,
+};
+
+/// Bundles the four trace writers into a single struct so they can be passed
+/// as one parameter instead of four. Each field is a pointer to an Io.Writer.
+pub const TraceWriters = struct {
+    action: *Io.Writer,
+    session: *Io.Writer,
+    create: *Io.Writer,
+    propagate: *Io.Writer,
+};
+
+/// Error set for simulation failures, distinguishing which data structure
+/// ran out of memory so the caller can report a precise diagnostic.
+pub const SimError = error{
+    OutOfMemoryQueue,
+    OutOfMemoryTimeline,
+    OutOfMemorySMAList,
+    OutOfMemoryPagedBitSet,
+    WriteFailed,
 };

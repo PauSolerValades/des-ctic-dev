@@ -219,6 +219,10 @@ fn simulationBatch(
     var stdout_writer = Io.File.stdout().writer(io, &buffer);
     const stdout = &stdout_writer.interface;
 
+    var bufferr: [1024]u8 = undefined;
+    var stderr_writer = Io.File.stderr().writer(io, &bufferr);
+    const stderr = &stderr_writer.interface;
+
     var prng: Random.DefaultPrng = .init(seed);
 
     var state: SimState = try .create(io, arena, gpa, prng.random(), topology);
@@ -282,18 +286,31 @@ fn simulationBatch(
             const prop_writer = &prop_file_writer.interface;
 
             const startTime = Io.Timestamp.now(io, .cpu_thread);
-            const result = try simulation.simulate(
+            const traces = entities.TraceWriters{
+                .action = action_writer,
+                .session = session_writer,
+                .create = create_writer,
+                .propagate = prop_writer,
+            };
+            const result = simulation.simulate(
                 gpa,
                 arena,
                 rng,
                 config,
                 topology,
                 &state,
-                action_writer,
-                session_writer,
-                create_writer,
-                prop_writer,
-            );
+                traces,
+            ) catch |err| {
+                switch (err) {
+                    error.OutOfMemoryQueue => try stderr.print("fatal - batch {d} run {d}: event queue ran out of memory\n", .{ worker_id, run_idx }),
+                    error.OutOfMemoryTimeline => try stderr.print("fatal - batch {d} run {d}: user timeline ran out of memory\n", .{ worker_id, run_idx }),
+                    error.OutOfMemorySMAList => try stderr.print("fatal - batch {d} run {d}: post list ran out of memory\n", .{ worker_id, run_idx }),
+                    error.OutOfMemoryPagedBitSet => try stderr.print("fatal - batch {d} run {d}: bit matrix ran out of memory\n", .{ worker_id, run_idx }),
+                    error.WriteFailed => try stderr.print("fatal - batch {d} run {d}: trace write to disk failed\n", .{ worker_id, run_idx }),
+                }
+                try stderr.flush();
+                std.process.exit(1);
+            };
             elapsedTime = startTime.untilNow(io, .cpu_thread);
 
             try stdout.print("{f}\n", .{result});
@@ -323,9 +340,6 @@ fn simulationBatch(
                 config,
                 topology,
                 &state,
-                undefined,
-                undefined,
-                undefined,
                 undefined,
             );
             elapsedTime = startTime.untilNow(io, .cpu_thread);
