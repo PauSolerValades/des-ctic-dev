@@ -64,7 +64,7 @@ pub const Topology = struct {
         }
 
         var ei: usize = 0;
-        while (ei < data.num_edges) : (ei += 2) {
+        while (ei < data.num_edges * 2) : (ei += 2) {
             const actor_id = data.edges[ei];
             const subject_id = data.edges[ei + 1];
             try tmp_followers[subject_id].append(allocator, @intCast(actor_id));
