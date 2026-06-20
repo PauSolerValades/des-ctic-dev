@@ -70,7 +70,7 @@ fn propagatePost(gpa: Allocator, topology: *const Topology, state: *SimState, t_
     const end_idx = if (user_id + 1 < state.users.len)
         topology.start[user_id + 1]
     else
-        @as(u32, @intCast(topology.start[user_id]));
+        @as(u32, @intCast(topology.csr.len));
     const count = end_idx - start_idx;
     const followers = topology.csr[start_idx .. start_idx + count];
 
