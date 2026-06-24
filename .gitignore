@@ -7,5 +7,8 @@ zig-out/
 /docgen_tmp/
 zig-pkg/
 
-data/
 traces/
+
+bskysim/data/
+
+create-dataset/buckets
