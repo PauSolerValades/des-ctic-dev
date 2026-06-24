@@ -103,10 +103,10 @@ pub fn main(init: std.process.Init) !void {
         iface.* = bw.iface();
     }
 
-    // fn processCreation(io: Io, id: usize, bucket_writers: []*Io.Writer, traceDir: *Io.Dir) void {
-    //
     for (ids.items) |id| {
         try processCreation(io, id, bucket_ifaces, &tracesDir);
+        try processPropagation(io, id, bucket_ifaces, &tracesDir);
+        try processRepost(io, id, bucket_ifaces, &tracesDir);
     }
 
     for (bucket_ifaces) |b| try b.flush();
@@ -146,6 +146,52 @@ pub fn main(init: std.process.Init) !void {
     // defer close propagation file
     // for line in file:
     //
+}
+
+fn processRepost(io: Io, id: usize, bucket_writers: []*Io.Writer, traceDir: *const Io.Dir) !void {
+
+    // open the creation file
+    var rt_trace_buf: [32]u8 = undefined;
+    const rt_trace_name = try std.fmt.bufPrint(&rt_trace_buf, "{d}-action_trace.bin", .{id});
+
+    const prop_file = try traceDir.openFile(io, rt_trace_name, .{ .mode = .read_only });
+    var buffer: [4 * 1024]u8 = undefined;
+    var trace_reader = prop_file.reader(io, &buffer);
+    const trace = &trace_reader.interface;
+
+    while (try nextTrace(traces.TraceAction, trace)) |pc| {
+        if (pc.type != .repost) continue;
+
+        const hashed_id = std.hash.Wyhash.hash(0, std.mem.asBytes(&pc.post_id));
+        const bucket_id = hashed_id % bucket_writers.len;
+
+        // run_id post_id user_id type timestamp
+        try bucket_writers[bucket_id].print("{d} {d} {d} {s} {d}\n", .{ id, pc.post_id, pc.user_id, "repost", pc.time });
+    }
+
+    return;
+}
+
+fn processPropagation(io: Io, id: usize, bucket_writers: []*Io.Writer, traceDir: *const Io.Dir) !void {
+
+    // open the creation file
+    var prop_trace_buf: [32]u8 = undefined;
+    const prop_trace_name = try std.fmt.bufPrint(&prop_trace_buf, "{d}-propagation_trace.bin", .{id});
+
+    const prop_file = try traceDir.openFile(io, prop_trace_name, .{ .mode = .read_only });
+    var buffer: [4 * 1024]u8 = undefined;
+    var trace_reader = prop_file.reader(io, &buffer);
+    const trace = &trace_reader.interface;
+
+    while (try nextTrace(traces.TracePropagation, trace)) |pc| {
+        const hashed_id = std.hash.Wyhash.hash(0, std.mem.asBytes(&pc.type));
+        const bucket_id = hashed_id % bucket_writers.len;
+
+        // run_id post_id user_id type timestamp
+        try bucket_writers[bucket_id].print("{d} {d} {d} {s} {d}\n", .{ id, pc.type, pc.user_id, "propagation", pc.time });
+    }
+
+    return;
 }
 
 fn processCreation(io: Io, id: usize, bucket_writers: []*Io.Writer, traceDir: *const Io.Dir) !void {
