@@ -187,6 +187,7 @@ pub fn main(init: std.process.Init) !void {
             start_idx,
             run_dir,
             i,
+            args.skipjsonl,
         };
         futures[i] = try tio.concurrent(simulationBatch, batch_args);
         try stdout.print("Spawned batch {d} with {d} runs\n", .{ i, runs });
@@ -208,6 +209,7 @@ fn simulationBatch(
     start_idx: usize,
     run_dir: []const u8,
     worker_id: usize,
+    skipjsonl: bool,
 ) !void {
     var aa: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
     defer aa.deinit();
@@ -328,16 +330,16 @@ fn simulationBatch(
             var jsonl_buf: [std.fs.max_path_bytes]u8 = undefined;
 
             const action_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/{d}-action_trace.jsonl", .{ run_dir, i });
-            try bytesToJsonl(io, traces.TraceAction, action_bin, action_jsonl);
+            if (!skipjsonl) try traces.bytesToJsonl(io, traces.TraceAction, action_bin, action_jsonl);
 
             const session_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/{d}-session_trace.jsonl", .{ run_dir, i });
-            try bytesToJsonl(io, traces.TraceSession, session_bin, session_jsonl);
+            if (!skipjsonl) try traces.bytesToJsonl(io, traces.TraceSession, session_bin, session_jsonl);
 
             const create_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/{d}-create_trace.jsonl", .{ run_dir, i });
-            try bytesToJsonl(io, traces.TraceCreate, create_bin, create_jsonl);
+            if (!skipjsonl) try traces.bytesToJsonl(io, traces.TraceCreate, create_bin, create_jsonl);
 
             const prop_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/{d}-propagate_trace.jsonl", .{ run_dir, i });
-            try bytesToJsonl(io, traces.TracePropagation, prop_bin, prop_jsonl);
+            if (!skipjsonl) try traces.bytesToJsonl(io, traces.TracePropagation, prop_bin, prop_jsonl);
         } else {
             // just run the simulation
             const startTime = Io.Timestamp.now(io, .cpu_thread);
@@ -365,42 +367,4 @@ fn simulationBatch(
     }
 
     return;
-}
-
-fn bytesToJsonl(io: Io, comptime T: type, read_file: []const u8, write_file: []const u8) !void {
-    const n = @sizeOf(T);
-
-    var jsonl_buffer: [4 * 1024]u8 = undefined;
-    const jsonl_file = try Io.Dir.cwd().createFile(io, write_file, .{ .read = false });
-    defer jsonl_file.close(io);
-    var jsonl_file_writer = jsonl_file.writer(io, &jsonl_buffer);
-    const writer = &jsonl_file_writer.interface;
-
-    if (Io.Dir.cwd().openFile(io, read_file, .{})) |file| {
-        defer file.close(io);
-
-        var buf: [4 * 1024]u8 = undefined;
-        var reader: Io.File.Reader = file.reader(io, &buf);
-        const ri = &reader.interface;
-
-        while (true) {
-            const bytes = ri.take(n) catch |err| {
-                switch (err) {
-                    error.EndOfStream => break,
-                    error.ReadFailed => return reader.err.?,
-                }
-            };
-
-            const event = std.mem.bytesAsValue(T, bytes);
-            try std.json.Stringify.value(event, .{}, writer);
-            try writer.writeAll("\n");
-        }
-    } else |err| switch (err) {
-        error.FileNotFound, error.AccessDenied => {
-            std.debug.print("unable to open file: {}\n", .{err});
-        },
-        else => |e| return e,
-    }
-
-    try writer.flush();
 }
