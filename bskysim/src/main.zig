@@ -36,6 +36,7 @@ const def = .{
     },
     .flags = .{
         Flag("clean", "c", "Delete the .bin output"),
+        Flag("skipjsonl", "s", "Don't convert to JSONL"),
     },
 };
 
@@ -60,6 +61,12 @@ pub fn main(init: std.process.Init) !void {
         }
         std.process.exit(0);
     };
+
+    if (args.clean and args.skipjsonl) {
+        try stdout.writeAll("Flags -c/--clean and -s/--skipjsonl are mutually exclusive");
+        try stdout.flush();
+        std.process.exit(0);
+    }
 
     var arena_json: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
     const data_alloc = arena_json.allocator();
