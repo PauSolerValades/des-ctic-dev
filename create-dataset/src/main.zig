@@ -10,26 +10,7 @@ const Flag = argz.Flag;
 
 const ParseErrors = argz.ParseErrors;
 
-const BucketWriter = struct {
-    file: Io.File,
-    writer: Io.File.Writer,
-    buffer: [16 * 1024]u8,
-
-    fn init(self: *@This(), io_: Io, dir: Io.Dir, index: usize) !void {
-        var name_buf: [32]u8 = undefined;
-        const path = try std.fmt.bufPrint(&name_buf, "{d}_bucket.ssv", .{index});
-        self.file = try dir.createFile(io_, path, .{ .truncate = true });
-        self.writer = self.file.writer(io_, &self.buffer);
-    }
-
-    fn deinit(self: *@This(), io_: Io) void {
-        self.file.close(io_);
-    }
-
-    fn iface(self: *@This()) *Io.Writer {
-        return &self.writer.interface;
-    }
-};
+const to_buckets = @import("bin_to_ssv.zig");
 
 const def = .{
     .name = "specific",
@@ -39,6 +20,8 @@ const def = .{
     },
     .options = .{
         Opt(usize, "buckets", "b", 256, "How many bucket the program hashed the info."),
+        Opt([]const u8, "bucketpath", "p", "/tmp/cascade-building/", "Where the temporal buckets should be processed."),
+        Opt([]const u8, "output", "o", ".", "Path to store the cascade.ssv"),
     },
     .flags = .{},
 };
@@ -66,6 +49,9 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(0);
     };
 
+    try stdout.print("Creating cascades of '{s}' with {d} buckets\n", .{ args.traces, args.buckets });
+    try stdout.flush();
+
     const tracesDir = Io.Dir.cwd().openDir(io, args.traces, .{ .access_sub_paths = false, .iterate = true }) catch |err| {
         try stderr.print("Failed to open traces dir '{s}': {}\n", .{ args.traces, err });
         try stderr.flush();
@@ -87,7 +73,7 @@ pub fn main(init: std.process.Init) !void {
     const bucket_ifaces = try gpa.alloc(*Io.Writer, num_buckets);
     defer gpa.free(bucket_ifaces);
 
-    const bucketsDir = createOrClearBucketsDir(io) catch |err| {
+    const bucketsDir = createOrClearBucketsDir(io, args.bucketpath) catch |err| {
         try stderr.print("Oof cannot init buckets dir: {}\n", .{err});
         try stderr.flush();
         std.process.exit(1);
@@ -104,132 +90,52 @@ pub fn main(init: std.process.Init) !void {
     }
 
     for (ids.items) |id| {
-        try processCreation(io, id, bucket_ifaces, &tracesDir);
-        try processPropagation(io, id, bucket_ifaces, &tracesDir);
-        try processRepost(io, id, bucket_ifaces, &tracesDir);
+        try to_buckets.processCreation(io, id, bucket_ifaces, &tracesDir);
+        try to_buckets.processPropagation(io, id, bucket_ifaces, &tracesDir);
+        try to_buckets.processRepost(io, id, bucket_ifaces, &tracesDir);
     }
 
     for (bucket_ifaces) |b| try b.flush();
-    // what we have to do per trace:
-    // 1. Reconstruct the cascade. -> compute things about the cascade
-    // 2. Calculate Post Lifetime
 
-    // we can go in a middle ground, which could be the "cascades" folder.
-    // The folder would contain a big file with cascades.
-    // - per cada node, guardem 1. qui l'ha propagat, 2. quan l'ha propagat. En essència totes les cascades són una taula d'una base de dades
-    // tal que
-    // - root_post_id: quina cascada és
-    // - user_id: usuari que ha repiulat
-    // - propagation_timestamp: quan s'ha fet la propagació (no el repost, sinó quan ha arribat)
-    // - repost_timestamp: owo
-    // amb això pots recrear una cascada sencera, part per part, i treure'n les dades necessàries, per exemple:
-    // 1. Viralitat estructural
-    // 2. Nombre de nodes.
-    // 3. profunditat.
-    // 4. Temps de vida del post.
-    // i diverses coses que farien falta.
+    try stdout.writeAll("Traces processed into buckets! Merging buckets...\n");
+    try stdout.flush();
 
-    // HOW TO: el com és curiós.
-    // 1. llegir creation trace i identificar les roots de les cascades. (eg, store the ids in a hashmap, and the timelines in an array)
-    // 2. llegir propagation, i anar afegint les propagacions d'una en una. ULL: una creació també és una propagació, així que hi haurà cert overlap
-    // no sé però si lo millor seria un csv amb totes les cascades, posar-ho directament en una base de dades o fer-ho fitxer per fitxer.
-    //
-    // Lògica:
-    // fn 1
-    // open creation file
-    // defer close creation file
-    // return create roots: HashMap(u64, timestamp)
-    //
-    //
-    // fn2 createCascade()
-    // open propagation_file
-    // defer close propagation file
-    // for line in file:
-    //
-}
-
-fn processRepost(io: Io, id: usize, bucket_writers: []*Io.Writer, traceDir: *const Io.Dir) !void {
-
-    // open the creation file
-    var rt_trace_buf: [32]u8 = undefined;
-    const rt_trace_name = try std.fmt.bufPrint(&rt_trace_buf, "{d}-action_trace.bin", .{id});
-
-    const prop_file = try traceDir.openFile(io, rt_trace_name, .{ .mode = .read_only });
-    var buffer: [4 * 1024]u8 = undefined;
-    var trace_reader = prop_file.reader(io, &buffer);
-    const trace = &trace_reader.interface;
-
-    while (try nextTrace(traces.TraceAction, trace)) |pc| {
-        if (pc.type != .repost) continue;
-
-        const hashed_id = std.hash.Wyhash.hash(0, std.mem.asBytes(&pc.post_id));
-        const bucket_id = hashed_id % bucket_writers.len;
-
-        // run_id post_id user_id type timestamp
-        try bucket_writers[bucket_id].print("{d} {d} {d} {s} {d}\n", .{ id, pc.post_id, pc.user_id, "repost", pc.time });
-    }
-
-    return;
-}
-
-fn processPropagation(io: Io, id: usize, bucket_writers: []*Io.Writer, traceDir: *const Io.Dir) !void {
-
-    // open the creation file
-    var prop_trace_buf: [32]u8 = undefined;
-    const prop_trace_name = try std.fmt.bufPrint(&prop_trace_buf, "{d}-propagation_trace.bin", .{id});
-
-    const prop_file = try traceDir.openFile(io, prop_trace_name, .{ .mode = .read_only });
-    var buffer: [4 * 1024]u8 = undefined;
-    var trace_reader = prop_file.reader(io, &buffer);
-    const trace = &trace_reader.interface;
-
-    while (try nextTrace(traces.TracePropagation, trace)) |pc| {
-        const hashed_id = std.hash.Wyhash.hash(0, std.mem.asBytes(&pc.type));
-        const bucket_id = hashed_id % bucket_writers.len;
-
-        // run_id post_id user_id type timestamp
-        try bucket_writers[bucket_id].print("{d} {d} {d} {s} {d}\n", .{ id, pc.type, pc.user_id, "propagation", pc.time });
-    }
-
-    return;
-}
-
-fn processCreation(io: Io, id: usize, bucket_writers: []*Io.Writer, traceDir: *const Io.Dir) !void {
-
-    // open the creation file
-    var creation_trace_buf: [32]u8 = undefined;
-    const creation_trace_name = try std.fmt.bufPrint(&creation_trace_buf, "{d}-create_trace.bin", .{id});
-
-    const creation_file = try traceDir.openFile(io, creation_trace_name, .{ .mode = .read_only });
-    var buffer: [4 * 1024]u8 = undefined;
-    var trace_reader = creation_file.reader(io, &buffer);
-    const trace = &trace_reader.interface;
-
-    while (try nextTrace(traces.TraceCreate, trace)) |pc| {
-        const hashed_id = std.hash.Wyhash.hash(0, std.mem.asBytes(&pc.post_id));
-        const bucket_id = hashed_id % bucket_writers.len;
-
-        // run_id post_id user_id type timestamp
-        try bucket_writers[bucket_id].print("{d} {d} {d} {s} {d}\n", .{ id, pc.post_id, pc.user_id, "creation", pc.time });
-    }
-
-    return;
-}
-
-fn nextTrace(comptime T: type, reader: *Io.Reader) !?T {
-    const bytes = reader.take(@sizeOf(T)) catch |err| {
-        switch (err) {
-            error.EndOfStream => return null,
-            error.ReadFailed => return err,
-        }
+    const mergeBuckets = @import("merge_buckets.zig").mergeBuckets;
+    mergeBuckets(io, gpa, num_buckets, args.bucketpath, stderr) catch {
+        try stderr.writeAll("Probelm opening the buckets directory :( \n");
+        try stderr.flush();
+        std.process.exit(1);
     };
-    return std.mem.bytesAsValue(T, bytes).*;
+
+    try stdout.print("Buckets Merged in {s}", .{args.output});
+    try stdout.flush();
 }
 
-fn createOrClearBucketsDir(io: Io) !Io.Dir {
-    _ = try Io.Dir.cwd().createDirPathStatus(io, "buckets", .default_dir);
+const BucketWriter = struct {
+    file: Io.File,
+    writer: Io.File.Writer,
+    buffer: [16 * 1024]u8,
 
-    const bucketsDir = try Io.Dir.cwd().openDir(io, "buckets", .{ .access_sub_paths = false, .iterate = true });
+    fn init(self: *@This(), io_: Io, dir: Io.Dir, index: usize) !void {
+        var name_buf: [32]u8 = undefined;
+        const path = try std.fmt.bufPrint(&name_buf, "{d}_bucket.ssv", .{index});
+        self.file = try dir.createFile(io_, path, .{ .truncate = true });
+        self.writer = self.file.writer(io_, &self.buffer);
+    }
+
+    fn deinit(self: *@This(), io_: Io) void {
+        self.file.close(io_);
+    }
+
+    fn iface(self: *@This()) *Io.Writer {
+        return &self.writer.interface;
+    }
+};
+
+fn createOrClearBucketsDir(io: Io, bucket_path: []const u8) !Io.Dir {
+    _ = try Io.Dir.cwd().createDirPathStatus(io, bucket_path, .default_dir);
+
+    const bucketsDir = try Io.Dir.cwd().openDir(io, bucket_path, .{ .access_sub_paths = false, .iterate = true });
 
     var dir_iter = bucketsDir.iterate();
     while (try dir_iter.next(io)) |entry| {
@@ -239,10 +145,6 @@ fn createOrClearBucketsDir(io: Io) !Io.Dir {
     return bucketsDir;
 }
 
-// fn processCreation(
-//     id,
-// )
-//
 fn obtainRunIds(
     io: Io,
     gpa: Allocator,
