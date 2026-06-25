@@ -131,6 +131,7 @@ pub fn main(init: std.process.Init) !void {
     try stdout.print("Time Elapsed wiring topology: {d} ms\n", .{elapsedTimeWireData.toMilliseconds()});
     try stdout.flush();
 
+    // TODO: Switch this to IO
     const data_dir = std.fs.path.dirname(args.data) orelse ".";
     const dataset_name = if (args.output.len > 0) args.output else std.fs.path.basename(data_dir);
 

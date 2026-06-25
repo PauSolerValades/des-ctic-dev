@@ -11,5 +11,5 @@ traces/
 
 bskysim/data/
 
-create-dataset/buckets
-create-dataset/cascades.ssv
+construct-cascades/buckets
+construct-cascades/cascades.ssv
