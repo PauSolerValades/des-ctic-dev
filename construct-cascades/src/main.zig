@@ -26,6 +26,8 @@ const def = .{
     .flags = .{},
 };
 
+pub const header = "run_id post_id user_id parent_id type time";
+
 pub fn main(init: std.process.Init) !void {
     var buffer: [1024]u8 = undefined;
     var stdout_writer = Io.File.stdout().writer(init.io, &buffer);
@@ -36,10 +38,8 @@ pub fn main(init: std.process.Init) !void {
     const stderr = &stderr_writer.interface;
 
     const io = init.io;
-    // const arena = init.arena.allocator();
     const gpa = init.gpa;
-    // const cwd = Io.Dir.cwd();
-    //
+
     var iter = init.minimal.args.iterate();
     const args = argz.parseArgsPosix(def, &iter, stdout, stderr) catch |err| {
         switch (err) {

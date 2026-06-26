@@ -28,6 +28,7 @@ pub fn mergeBuckets(io: Io, gpa: Allocator, num_buckets: usize, buckets_path: []
     var cascades_buf: [64 * 1024]u8 = undefined;
     var cascades_writer = cascades_file.writer(io, &cascades_buf);
     const cascades = &cascades_writer.interface;
+    try cascades.print("{s}\n", .{@import("main.zig").header}); // write the header lol
 
     var total_lines: usize = 0;
     var bucket_idx: usize = 0;
