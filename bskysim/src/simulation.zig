@@ -43,7 +43,6 @@ const SimError = entities.SimError;
 
 const TimelineEvent = entities.TimelineEvent;
 const compareTimelineEvent = entities.compareTimelineEvent;
-const Index = entities.Index;
 
 const EventQueue: type = DaryHeap(Event, 8, void, entities.compareEvent);
 
@@ -67,7 +66,7 @@ pub const SimMetrics = struct {
 
 const Unif = dist.Uniform(Precision);
 
-fn propagatePost(gpa: Allocator, topology: *const Topology, state: *SimState, t_clock: f64, user_id: u32, post_id: Index) SimError!void {
+fn propagatePost(gpa: Allocator, topology: *const Topology, state: *SimState, t_clock: f64, user_id: u32, post_id: u32) SimError!void {
     const start_idx = topology.start[user_id];
     const end_idx = if (user_id + 1 < state.users.len)
         topology.start[user_id + 1]
@@ -254,7 +253,7 @@ pub fn simulate(
 
     while (t_clock <= t_end and queue.items.len > 0) {
         const current_event = queue.pop();
-        const current_uid: Index = current_event.user_id;
+        const current_uid: u32 = current_event.user_id;
         const gen_id = current_event.id;
         std.debug.assert(current_event.time >= t_clock);
         t_clock = current_event.time;
@@ -359,7 +358,7 @@ pub fn simulate(
                 if (user_timeline.items.len != 0) {
                     // Drain already-interacted posts inline to avoid bouncing
                     // through the global event queue for each skipped post.
-                    var post_id: ?Index = null;
+                    var post_id: ?u32 = null;
                     while (user_timeline.items.len != 0) {
                         const p = user_timeline.pop();
                         if (!state.user_interact_post.isSet(current_uid, p.post_id)) {

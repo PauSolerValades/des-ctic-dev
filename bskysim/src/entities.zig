@@ -17,10 +17,8 @@ const ArrayList = std.ArrayList;
 
 const Precision = config.Precision;
 
-pub const Index: type = u32;
-
 pub const User = struct {
-    id: Index,
+    id: u32,
     is_online: bool = false,
     session_gen: u32 = 0,
 
@@ -34,8 +32,8 @@ pub const User = struct {
 
 /// Post of the simulation
 pub const Post = struct {
-    id: Index,
-    author: Index,
+    id: u32,
+    author: u32,
 };
 
 /// Actions performable over a post by a user in the simulation
@@ -57,14 +55,14 @@ pub const EventType = union(enum) {
     action: Action,
     session: Session,
     create: void,
-    propagate: Index,
+    propagate: u32,
 };
 
 /// Simulation Event for Reverse-Chronological Simulations
 pub const Event = struct {
     time: f64, // when will the action be due
     type: EventType, //
-    user_id: Index, // user id
+    user_id: u32, // user id
     session_gen: u32, // in which session from the user_id does this event belong
     id: u64, // which action is it
 };
@@ -82,7 +80,7 @@ pub fn compareEvent(context: void, a: Event, b: Event) Order {
 /// to get it transmitted everywhere
 pub const TimelineEvent = struct {
     time: f64,
-    post_id: Index,
+    post_id: u32,
 };
 
 /// Heap comparison function for user timelines in Reverse-Chronological simulations

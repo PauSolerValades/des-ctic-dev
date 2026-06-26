@@ -18,7 +18,6 @@ const Precision = structs.Precision;
 const User = entities.User;
 const Post = entities.Post;
 const TimelineEvent = entities.TimelineEvent;
-const Index = entities.Index;
 
 const compareTimelineEvent = entities.compareTimelineEvent;
 
@@ -28,24 +27,24 @@ pub const NetworkJson = struct {
 };
 
 const ParsedUser = struct {
-    id: Index,
+    id: u32,
     actions: []entities.Action,
     policy: []Precision,
 };
 
 const ParsedPost = struct {
-    id: Index,
+    id: u32,
     //time: f64,
 };
 
 const ParsedFollow = struct {
-    follower_id: Index,
-    followed_id: Index,
+    follower_id: u32,
+    followed_id: u32,
 };
 
 const ParsedOwns = struct {
-    user_id: Index,
-    post_id: Index,
+    user_id: u32,
+    post_id: u32,
 };
 
 pub fn loadJson(gpa: Allocator, io: Io, path: []const u8, comptime T: type) !json.Parsed(T) {
@@ -108,5 +107,3 @@ pub const BinaryGraph = struct {
         gpa.free(self.user_ids);
     }
 };
-
-
