@@ -86,13 +86,13 @@ pub fn eventCreatePost(rng: Random, simconf: *const SimConfig, users: *const std
     return new_post;
 }
 
-pub fn eventPropagate(rng: Random, simconf: *const SimConfig, t_clock: f64, current_uid: u32, post_id: u32, generated_events: u64) Event {
+pub fn eventPropagate(rng: Random, simconf: *const SimConfig, t_clock: f64, current_uid: u32, post_id: u32, parent_id: u32, generated_events: u64) Event {
     // Sample the delay ONCE for the broadcast
     const delay = simconf.propagation_delay.sample(rng);
 
     return Event{
         .time = t_clock + delay,
-        .type = .{ .propagate = post_id },
+        .type = .{ .propagate = .{ .post_id = post_id, .parent_id = parent_id } },
         .user_id = current_uid, // the author
         .id = generated_events,
         .session_gen = 0, // System event, ignores sessions

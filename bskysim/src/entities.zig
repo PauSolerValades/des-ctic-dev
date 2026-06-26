@@ -55,7 +55,12 @@ pub const EventType = union(enum) {
     action: Action,
     session: Session,
     create: void,
-    propagate: u32,
+    propagate: Propagate,
+};
+
+pub const Propagate = struct {
+    post_id: u32,
+    parent_id: u32,
 };
 
 /// Simulation Event for Reverse-Chronological Simulations
@@ -81,6 +86,7 @@ pub fn compareEvent(context: void, a: Event, b: Event) Order {
 pub const TimelineEvent = struct {
     time: f64,
     post_id: u32,
+    parent_id: u32, // this for cascade reconstruction. Who reposted this post.
 };
 
 /// Heap comparison function for user timelines in Reverse-Chronological simulations

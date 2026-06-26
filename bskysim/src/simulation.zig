@@ -66,7 +66,7 @@ pub const SimMetrics = struct {
 
 const Unif = dist.Uniform(Precision);
 
-fn propagatePost(gpa: Allocator, topology: *const Topology, state: *SimState, t_clock: f64, user_id: u32, post_id: u32) SimError!void {
+fn propagatePost(gpa: Allocator, topology: *const Topology, state: *SimState, t_clock: f64, user_id: u32, post_id: u32, parent_id: u32) SimError!void {
     const start_idx = topology.start[user_id];
     const end_idx = if (user_id + 1 < state.users.len)
         topology.start[user_id + 1]
@@ -78,6 +78,7 @@ fn propagatePost(gpa: Allocator, topology: *const Topology, state: *SimState, t_
     const tl_event = TimelineEvent{
         .time = t_clock,
         .post_id = post_id,
+        .parent_id = parent_id,
     };
 
     for (followers) |fid| {
@@ -130,7 +131,7 @@ fn stageOne(
                 state.user_seen_post.set(current_uid, new_post_id);
                 state.user_interact_post.set(current_uid, new_post_id);
 
-                const propagate = gen.eventPropagate(rng, simconf, t_clock.*, current_uid, new_post_id, metrics.generated_events);
+                const propagate = gen.eventPropagate(rng, simconf, t_clock.*, current_uid, new_post_id, current_uid, metrics.generated_events);
                 queue.push(gpa, propagate) catch return error.OutOfMemoryQueue;
                 metrics.generated_events += 1;
 
@@ -144,9 +145,10 @@ fn stageOne(
                 queue.push(gpa, new_post) catch return error.OutOfMemoryQueue;
                 metrics.generated_events += 1;
             },
-            .propagate => |post_id| {
-                try propagatePost(gpa, topology, state, t_clock.*, current_uid, post_id);
-                const p = TracePropagation{ .time = t_clock.*, .post_id = post_id, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id };
+            .propagate => |prop| {
+                // when creating, parent_id = current_uid. Not the same when Action
+                try propagatePost(gpa, topology, state, t_clock.*, current_uid, prop.post_id, prop.parent_id);
+                const p = TracePropagation{ .time = t_clock.*, .post_id = prop.post_id, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id };
                 const bytes = std.mem.asBytes(&p);
                 try traces.propagate.writeAll(bytes);
             },
@@ -281,7 +283,7 @@ pub fn simulate(
                 state.user_seen_post.set(current_uid, new_post_id);
                 state.user_interact_post.set(current_uid, new_post_id);
 
-                const propagate = gen.eventPropagate(rng, simconf, t_clock, current_uid, new_post_id, metrics.generated_events);
+                const propagate = gen.eventPropagate(rng, simconf, t_clock, current_uid, new_post_id, current_uid, metrics.generated_events);
                 queue.push(gpa, propagate) catch return error.OutOfMemoryQueue;
                 metrics.generated_events += 1;
 
@@ -358,37 +360,37 @@ pub fn simulate(
                 if (user_timeline.items.len != 0) {
                     // Drain already-interacted posts inline to avoid bouncing
                     // through the global event queue for each skipped post.
-                    var post_id: ?u32 = null;
-                    while (user_timeline.items.len != 0) {
-                        const p = user_timeline.pop();
-                        if (!state.user_interact_post.isSet(current_uid, p.post_id)) {
-                            post_id = p.post_id;
+                    var post: ?TimelineEvent = null;
+                    while (user_timeline.items.len > 0) {
+                        // this is not null due to the len being > 0
+                        post = user_timeline.pop();
+                        if (!state.user_interact_post.isSet(current_uid, post.?.post_id)) {
                             break;
                         }
                     }
 
-                    if (post_id) |pid| {
-                        const a = TraceAction{ .time = t_clock, .type = act, .user_id = current_uid, .post_id = pid, .event_id = metrics.processed_events, .gen_id = gen_id };
+                    if (post) |p| {
+                        const a = TraceAction{ .time = t_clock, .type = act, .user_id = current_uid, .post_id = p.post_id, .parent_id = p.parent_id, .event_id = metrics.processed_events, .gen_id = gen_id };
                         const bytes = std.mem.asBytes(&a);
                         try traces.action.writeAll(bytes);
 
                         // Always mark as seen (diagnostic: counts every exposure)
-                        state.user_seen_post.set(current_uid, pid);
+                        state.user_seen_post.set(current_uid, p.post_id);
                         metrics.impressions += 1;
 
                         switch (act) {
                             .repost => {
                                 // desensitized: user propagated, can't interact with this post again
-                                state.user_interact_post.set(current_uid, pid);
+                                state.user_interact_post.set(current_uid, p.post_id);
 
-                                const propagate = gen.eventPropagate(rng, simconf, t_clock, current_uid, pid, metrics.generated_events);
+                                const propagate = gen.eventPropagate(rng, simconf, t_clock, current_uid, p.post_id, p.parent_id, metrics.generated_events);
                                 queue.push(gpa, propagate) catch return error.OutOfMemoryQueue;
                                 metrics.generated_events += 1;
                                 metrics.reposts += 1;
                             },
                             .like => {
                                 // desensitized: user consumed and acknowledged (platform prevents double-liking)
-                                state.user_interact_post.set(current_uid, pid);
+                                state.user_interact_post.set(current_uid, p.post_id);
                                 metrics.likes += 1;
                             },
                             .ignore => {
@@ -437,9 +439,9 @@ pub fn simulate(
                 }
             },
 
-            .propagate => |post_id| {
-                try propagatePost(gpa, topology, state, t_clock, current_uid, post_id);
-                const p = TracePropagation{ .time = t_clock, .post_id = post_id, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id };
+            .propagate => |post| {
+                try propagatePost(gpa, topology, state, t_clock, current_uid, post.post_id, post.parent_id);
+                const p = TracePropagation{ .time = t_clock, .post_id = post.post_id, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id };
                 const bytes = std.mem.asBytes(&p);
                 try traces.propagate.writeAll(bytes);
                 metrics.processed_events += 1;

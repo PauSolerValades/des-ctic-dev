@@ -11,6 +11,7 @@ pub const TraceAction = struct {
     gen_id: u64,
     user_id: u32,
     post_id: u32,
+    parent_id: u32,
     type: e.Action,
 };
 
