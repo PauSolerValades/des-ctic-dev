@@ -52,6 +52,7 @@ pub fn main(init: std.process.Init) !void {
     const len = args.output.len;
     if (!std.mem.eql(u8, args.output[(len - 4)..len], ".ssv")) {
         try stderr.writeAll("The output file must be a path to an .ssv file");
+        try stderr.flush();
         std.process.exit(1);
     }
 

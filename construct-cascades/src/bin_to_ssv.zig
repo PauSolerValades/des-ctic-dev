@@ -2,6 +2,8 @@ const std = @import("std");
 const Io = std.Io;
 const traces = @import("traces");
 
+pub const line_fmt = "{d} {d} {d} {d} {s} {d}\n";
+
 fn nextTrace(comptime T: type, reader: *Io.Reader) !?T {
     const bytes = reader.take(@sizeOf(T)) catch |err| {
         switch (err) {
@@ -31,7 +33,7 @@ pub fn processRepost(io: Io, id: usize, bucket_writers: []*Io.Writer, traceDir: 
         const bucket_id = hashed_id % bucket_writers.len;
 
         // run_id post_id user_id type timestamp
-        try bucket_writers[bucket_id].print("{d} {d} {d} {s} {d}\n", .{ id, pc.post_id, pc.user_id, @tagName(pc.type), pc.time });
+        try bucket_writers[bucket_id].print(line_fmt, .{ id, pc.post_id, pc.user_id, pc.parent_id, @tagName(pc.type), pc.time });
     }
 
     return;
@@ -54,7 +56,7 @@ pub fn processPropagation(io: Io, id: usize, bucket_writers: []*Io.Writer, trace
         const bucket_id = hashed_id % bucket_writers.len;
 
         // run_id post_id user_id type timestamp
-        try bucket_writers[bucket_id].print("{d} {d} {d} {s} {d}\n", .{ id, pc.post_id, pc.user_id, "propagation", pc.time });
+        try bucket_writers[bucket_id].print(line_fmt, .{ id, pc.post_id, pc.user_id, -1, "propagation", pc.time });
     }
 
     return;
@@ -78,7 +80,7 @@ pub fn processCreation(io: Io, id: usize, bucket_writers: []*Io.Writer, traceDir
         const bucket_id = hashed_id % bucket_writers.len;
 
         // run_id post_id user_id type timestamp
-        try bucket_writers[bucket_id].print("{d} {d} {d} {s} {d}\n", .{ id, pc.post_id, pc.user_id, "creation", pc.time });
+        try bucket_writers[bucket_id].print(line_fmt, .{ id, pc.post_id, pc.user_id, pc.user_id, "creation", pc.time });
     }
 
     return;
