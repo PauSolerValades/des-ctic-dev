@@ -13,7 +13,7 @@ const Event = struct {
 
 const KeyVal = struct { key: CascadeKey, events: std.ArrayListUnmanaged(Event) };
 
-pub fn mergeBuckets(io: Io, gpa: Allocator, num_buckets: usize, buckets_path: []const u8, stderr: *Io.Writer) (error{ WriteFailed, OutOfMemory } || Io.Dir.OpenError || Io.File.OpenError)!void {
+pub fn mergeBuckets(io: Io, gpa: Allocator, num_buckets: usize, buckets_path: []const u8, output_path: []const u8, stderr: *Io.Writer) (error{ WriteFailed, OutOfMemory } || Io.Dir.OpenError || Io.File.OpenError)!void {
     const buckets_dir = try Io.Dir.cwd().openDir(io, "buckets", .{});
     defer buckets_dir.close(io);
 
@@ -21,7 +21,8 @@ pub fn mergeBuckets(io: Io, gpa: Allocator, num_buckets: usize, buckets_path: []
     // This means eventual multithreading is straightforward: each worker
     // gets a range of buckets and a pre-computed write offset, then writes
     // directly without coordination.
-    const cascades_file = try Io.Dir.cwd().createFile(io, "cascades.ssv", .{ .truncate = true });
+    //
+    const cascades_file = try Io.Dir.cwd().createFile(io, output_path, .{ .truncate = true });
     defer cascades_file.close(io);
 
     var cascades_buf: [64 * 1024]u8 = undefined;

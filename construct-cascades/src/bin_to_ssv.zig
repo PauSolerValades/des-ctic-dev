@@ -25,13 +25,13 @@ pub fn processRepost(io: Io, id: usize, bucket_writers: []*Io.Writer, traceDir: 
     const trace = &trace_reader.interface;
 
     while (try nextTrace(traces.TraceAction, trace)) |pc| {
-        if (pc.type != .repost) continue;
+        if (pc.type == .repost) continue;
 
         const hashed_id = std.hash.Wyhash.hash(0, std.mem.asBytes(&pc.post_id));
         const bucket_id = hashed_id % bucket_writers.len;
 
         // run_id post_id user_id type timestamp
-        try bucket_writers[bucket_id].print("{d} {d} {d} {s} {d}\n", .{ id, pc.post_id, pc.user_id, "repost", pc.time });
+        try bucket_writers[bucket_id].print("{d} {d} {d} {s} {d}\n", .{ id, pc.post_id, pc.user_id, @tagName(pc.type), pc.time });
     }
 
     return;
@@ -50,11 +50,11 @@ pub fn processPropagation(io: Io, id: usize, bucket_writers: []*Io.Writer, trace
     const trace = &trace_reader.interface;
 
     while (try nextTrace(traces.TracePropagation, trace)) |pc| {
-        const hashed_id = std.hash.Wyhash.hash(0, std.mem.asBytes(&pc.type));
+        const hashed_id = std.hash.Wyhash.hash(0, std.mem.asBytes(&pc.post_id));
         const bucket_id = hashed_id % bucket_writers.len;
 
         // run_id post_id user_id type timestamp
-        try bucket_writers[bucket_id].print("{d} {d} {d} {s} {d}\n", .{ id, pc.type, pc.user_id, "propagation", pc.time });
+        try bucket_writers[bucket_id].print("{d} {d} {d} {s} {d}\n", .{ id, pc.post_id, pc.user_id, "propagation", pc.time });
     }
 
     return;

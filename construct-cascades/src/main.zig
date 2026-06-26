@@ -49,6 +49,12 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(0);
     };
 
+    const len = args.output.len;
+    if (!std.mem.eql(u8, args.output[(len - 4)..len], ".ssv")) {
+        try stderr.writeAll("The output file must be a path to an .ssv file");
+        std.process.exit(1);
+    }
+
     try stdout.print("Creating cascades of '{s}' with {d} buckets\n", .{ args.traces, args.buckets });
     try stdout.flush();
 
@@ -101,7 +107,7 @@ pub fn main(init: std.process.Init) !void {
     try stdout.flush();
 
     const mergeBuckets = @import("merge_buckets.zig").mergeBuckets;
-    mergeBuckets(io, gpa, num_buckets, args.bucketpath, stderr) catch {
+    mergeBuckets(io, gpa, num_buckets, args.bucketpath, args.output, stderr) catch {
         try stderr.writeAll("Probelm opening the buckets directory :( \n");
         try stderr.flush();
         std.process.exit(1);
