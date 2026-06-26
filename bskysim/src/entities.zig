@@ -47,7 +47,9 @@ pub const Action = enum { ignore, like, repost };
 /// Session states
 /// - start: makes the user go back online, see posts and interact with them
 /// - end: makes the user go offline: should nuke it's timeline
-pub const Session = enum { start, end };
+pub const Session = enum { start, end_boredom, end };
+
+pub const SwapReason = enum { simulation_start, session_start, refresh };
 
 /// For RCAPS and RCOPS. Having this is much better for code clarity
 /// and to not make weird stuff happen with the switch

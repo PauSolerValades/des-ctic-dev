@@ -36,7 +36,13 @@ pub const TracePropagation = struct {
     event_id: u64,
     gen_id: u64,
     user_id: u32,
-    type: u32,
+    post_id: u32,
+};
+
+pub const TraceSwap = struct {
+    time: f64,
+    user_id: u32,
+    reason: e.SwapReason,
 };
 
 /// Bundles the four trace writers into a single struct so they can be passed
@@ -46,6 +52,7 @@ pub const TraceWriters = struct {
     session: *Io.Writer,
     create: *Io.Writer,
     propagate: *Io.Writer,
+    swaps: *Io.Writer,
 };
 
 /// converts the json to traces

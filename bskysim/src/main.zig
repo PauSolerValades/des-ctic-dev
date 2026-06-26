@@ -247,6 +247,7 @@ fn simulationBatch(
     const session_name = "session_trace.bin";
     const create_name = "create_trace.bin";
     const propagation_name = "propagation_trace.bin";
+    const swap_name = "swap_trace.bin";
 
     for (0..runs) |i| {
         const run_idx = start_idx + i;
@@ -269,11 +270,14 @@ fn simulationBatch(
             const create_bin = try std.fmt.bufPrint(&create_bin_buf, "{s}/{d}-{s}", .{ run_dir, run_idx, create_name });
             var prop_bin_buf: [std.fs.max_path_bytes]u8 = undefined;
             const prop_bin = try std.fmt.bufPrint(&prop_bin_buf, "{s}/{d}-{s}", .{ run_dir, run_idx, propagation_name });
+            var swap_bin_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const swap_bin = try std.fmt.bufPrint(&swap_bin_buf, "{s}/{d}-{s}", .{ run_dir, run_idx, swap_name });
 
             var action_buffer: [64 * 1024]u8 = undefined;
             var session_buffer: [64 * 1024]u8 = undefined;
             var create_buffer: [64 * 1024]u8 = undefined;
             var propagation_buffer: [64 * 1024]u8 = undefined;
+            var swap_buffer: [64 * 1024]u8 = undefined;
 
             const cwd = Io.Dir.cwd();
             const action_file = try cwd.createFile(io, action_bin, .{});
@@ -296,12 +300,18 @@ fn simulationBatch(
             var prop_file_writer = prop_file.writer(io, &propagation_buffer);
             const prop_writer = &prop_file_writer.interface;
 
+            const swap_file = try cwd.createFile(io, swap_bin, .{});
+            defer swap_file.close(io);
+            var swap_file_writer = swap_file.writer(io, &swap_buffer);
+            const swap_writer = &swap_file_writer.interface;
+
             const startTime = Io.Timestamp.now(io, .cpu_thread);
             const t = traces.TraceWriters{
                 .action = action_writer,
                 .session = session_writer,
                 .create = create_writer,
                 .propagate = prop_writer,
+                .swaps = swap_writer,
             };
             const result = simulation.simulate(
                 gpa,
@@ -341,6 +351,9 @@ fn simulationBatch(
 
             const prop_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/{d}-propagate_trace.jsonl", .{ run_dir, i });
             if (!skipjsonl) try traces.bytesToJsonl(io, traces.TracePropagation, prop_bin, prop_jsonl);
+
+            const swap_jsonl = try std.fmt.bufPrint(&jsonl_buf, "{s}/{d}-swap_trace.jsonl", .{ run_dir, i });
+            if (!skipjsonl) try traces.bytesToJsonl(io, traces.TraceSwap, swap_bin, swap_jsonl);
         } else {
             // just run the simulation
             const startTime = Io.Timestamp.now(io, .cpu_thread);

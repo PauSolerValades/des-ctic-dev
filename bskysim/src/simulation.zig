@@ -37,6 +37,7 @@ const TraceAction = t.TraceAction;
 const TraceSession = t.TraceSession;
 const TraceCreate = t.TraceCreate;
 const TracePropagation = t.TracePropagation;
+const TraceSwap = t.TraceSwap;
 const TraceWriters = t.TraceWriters;
 const SimError = entities.SimError;
 
@@ -146,7 +147,7 @@ fn stageOne(
             },
             .propagate => |post_id| {
                 try propagatePost(gpa, topology, state, t_clock.*, current_uid, post_id);
-                const p = TracePropagation{ .time = t_clock.*, .type = post_id, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id };
+                const p = TracePropagation{ .time = t_clock.*, .post_id = post_id, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id };
                 const bytes = std.mem.asBytes(&p);
                 try traces.propagate.writeAll(bytes);
             },
@@ -226,6 +227,9 @@ pub fn simulate(
     // immediately visible when the real simulation starts.
     for (0..state.users.len) |uid| {
         state.timelines[uid].switchTl();
+        const sw = TraceSwap{ .time = t_clock, .user_id = @intCast(uid), .reason = .simulation_start };
+        const sw_bytes = std.mem.asBytes(&sw);
+        try traces.swaps.writeAll(sw_bytes);
     }
 
     // decide which users start online or not
@@ -255,15 +259,20 @@ pub fn simulate(
         std.debug.assert(current_event.time >= t_clock);
         t_clock = current_event.time;
 
+        // check staleness of the event.
+        // NOTE: start is not affected by this, as whenever a session starts, the session_gen is augmented by one
+        // it will be never triggered.
+        // also, propagation must be excluded, as the user has already interacted.
+        if (current_event.type != .propagate) {
+            const is_event_stale: bool = current_event.session_gen != user_session[current_uid];
+            const is_user_online: bool = user_online[current_uid];
+            if (is_event_stale or !is_user_online) {
+                metrics.dropped_events += 1;
+                continue;
+            }
+        }
         switch (current_event.type) {
             .create => {
-                const is_event_stale: bool = current_event.session_gen != user_session[current_uid];
-                const is_user_online: bool = user_online[current_uid];
-                // Note: if an event is stale the user cannot be online. it's just a double check
-                if (is_event_stale or !is_user_online) {
-                    metrics.dropped_events += 1;
-                    continue;
-                }
                 const new_post_id = metrics.post_count;
 
                 user_num_posts[current_uid] += 1;
@@ -289,15 +298,9 @@ pub fn simulate(
             },
 
             .session => |ssn| {
-                // a session can be stale due to the catch up mechanic.
-                const is_event_stale: bool = current_event.session_gen != user_session[current_uid];
-                if (ssn == .end and (!user_online[current_uid] or is_event_stale)) {
-                    metrics.dropped_events += 1;
-                    continue;
-                }
-
                 const user_timeline = state.timelines[current_uid].getActive();
                 const background_timeline = state.timelines[current_uid].getBackground();
+                // a .end_boredom check not needed as backlog is zero for sure
                 const backlog: u32 = if (ssn == .end) @intCast(background_timeline.items.len) else 0;
                 const s = TraceSession{ .time = t_clock, .type = ssn, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id, .backlog = backlog };
                 const bytes = std.mem.asBytes(&s);
@@ -314,6 +317,10 @@ pub fn simulate(
                         // swap to bring backlog (posts accumulated during offline + previous session) to the front
                         state.timelines[current_uid].switchTl();
 
+                        const sw = TraceSwap{ .time = t_clock, .user_id = current_uid, .reason = .session_start };
+                        const sw_bytes = std.mem.asBytes(&sw);
+                        try traces.swaps.writeAll(sw_bytes);
+
                         const first_action = gen.eventAction(rng, simconf, t_clock, current_uid, user_session[current_uid], metrics.generated_events);
                         queue.push(gpa, first_action) catch return error.OutOfMemoryQueue;
                         metrics.generated_events += 1;
@@ -326,7 +333,7 @@ pub fn simulate(
                         queue.push(gpa, end_session) catch return error.OutOfMemoryQueue;
                         metrics.generated_events += 1;
                     },
-                    .end => {
+                    .end, .end_boredom => {
                         // schedule users wake up time
                         user_online[current_uid] = false;
                         // metrics
@@ -347,14 +354,6 @@ pub fn simulate(
             },
 
             .action => |act| {
-                const is_event_stale: bool = current_event.session_gen != user_session[current_uid];
-                const is_user_online: bool = user_online[current_uid];
-
-                if (is_event_stale or !is_user_online) {
-                    metrics.dropped_events += 1;
-                    continue;
-                }
-
                 const user_timeline = state.timelines[current_uid].getActive();
 
                 if (user_timeline.items.len != 0) {
@@ -416,7 +415,7 @@ pub fn simulate(
                         metrics.empty_timeline_ends += 1;
                         user_session[current_uid] += 1;
 
-                        const s = TraceSession{ .time = t_clock, .type = .end, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id, .backlog = 0 };
+                        const s = TraceSession{ .time = t_clock, .type = .end_boredom, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id, .backlog = 0 };
                         const bytes = std.mem.asBytes(&s);
                         try traces.session.writeAll(bytes);
 
@@ -428,6 +427,10 @@ pub fn simulate(
                         // switch the timelines add a new event action which will be from the other timeline
                         state.timelines[current_uid].switchTl();
 
+                        const sw = TraceSwap{ .time = t_clock, .user_id = current_uid, .reason = .refresh };
+                        const sw_bytes = std.mem.asBytes(&sw);
+                        try traces.swaps.writeAll(sw_bytes);
+
                         const action = gen.eventAction(rng, simconf, t_clock, current_uid, user_session[current_uid], metrics.generated_events);
                         queue.push(gpa, action) catch return error.OutOfMemoryQueue;
                         metrics.generated_events += 1;
@@ -437,7 +440,7 @@ pub fn simulate(
 
             .propagate => |post_id| {
                 try propagatePost(gpa, topology, state, t_clock, current_uid, post_id);
-                const p = TracePropagation{ .time = t_clock, .type = post_id, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id };
+                const p = TracePropagation{ .time = t_clock, .post_id = post_id, .user_id = current_uid, .event_id = metrics.processed_events, .gen_id = gen_id };
                 const bytes = std.mem.asBytes(&p);
                 try traces.propagate.writeAll(bytes);
                 metrics.processed_events += 1;
@@ -449,6 +452,7 @@ pub fn simulate(
     try traces.session.flush();
     try traces.create.flush();
     try traces.propagate.flush();
+    try traces.swaps.flush();
 
     var total_active_backlog: usize = 0;
     var total_backlog: usize = 0;
